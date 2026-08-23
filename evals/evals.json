@@ -1,0 +1,126 @@
+{
+  "skill_name": "learn-anything",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Teach me Rust ownership by helping me build a small channel-based worker. I do not know Rust yet, and I want to write and run each piece in the browser.",
+      "expected_output": "Agent constructs or resumes a browser workspace, discloses detected fallbacks, launches it, and starts a just-in-time milestone with runnable Rust code.",
+      "files": [],
+      "expectations": [
+        "The agent treats learn-anything as a constructor kit rather than rewriting the browser application.",
+        "The agent runs capability detection and creates a topic learning directory.",
+        "The learner receives a dynamic browser workspace with runnable code stage.",
+        "Any missing container or streaming bridge is disclosed explicitly."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "I cloned an unfamiliar TypeScript repo. Help me understand its event flow and then add one feature, but teach me the architecture as we work.",
+      "expected_output": "Agent builds a project-local learning workspace, keeps project source read-only until edits are authorized, and uses diagrams plus milestone exercises tied to the repository.",
+      "files": [],
+      "expectations": [
+        "The learning directory is project-local.",
+        "The agent does not mutate project source merely to teach it.",
+        "The dynamic stage changes between architecture explanation and runnable exercise.",
+        "Progress and notes are persisted for resume."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Help me practice Excel lookup formulas with examples and quizzes. My coding agent cannot run headlessly, but it can use shell commands.",
+      "expected_output": "Agent selects portable shell profile, launches the browser workspace, explains per-turn degradation, and composes subject-native table, formula, and question surfaces from available blocks.",
+      "files": [],
+      "expectations": [
+        "The portable shell mentor bridge is selected.",
+        "Reduced streaming capability is disclosed.",
+        "The agent uses available table and interaction primitives without exposing implementation scaffolding or promising an unavailable full spreadsheet grid.",
+        "The browser remains the primary learning surface."
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Launch the learning workspace and do not call it done until you have clicked and verified everything in the browser.",
+      "expected_output": "Agent performs a real browser journey through the selected mentor adapter and reports ready only after visible interaction evidence passes.",
+      "files": [],
+      "expectations": [
+        "The agent types a message and clicks Send in a real browser instead of injecting only API events.",
+        "The browser shows waiting or responding state and receives an actual mentor reply.",
+        "The agent clicks each control present in the current stage, including Run when code is present and Ask mentor in work focus.",
+        "The agent verifies Enter, Shift+Enter, refresh persistence, focus transitions, and nonblank recovery before reporting ready."
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Teach me Rust. I am a total beginner.",
+      "expected_output": "Mentor starts in conversation, explains one foundational idea in plain language, then offers a guided worked example before any learner coding task.",
+      "files": [],
+      "expectations": [
+        "No level selector, unexplained internal profile terminology, opening quiz, or coding exam appears.",
+        "Chat remains primary until the learner understands the next activity.",
+        "Any work surface has one clear task, a worked example, and an expected result."
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "I have never studied medieval literature. Help me understand where to begin and why it matters. Do not test me before teaching me.",
+      "expected_output": "Mentor keeps chat primary, introduces one concrete literary anchor in plain language, and asks a meaningful question before choosing the next path.",
+      "files": [],
+      "expectations": [
+        "No code editor, execution console, opening quiz, or internal runtime terminology appears.",
+        "The first response is not a broad field dump and does not choose a long course path without learner input."
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "I know basic algebra but no physics beyond high school. Teach quantum superposition intuitively before equations. Use a visual only if it genuinely helps.",
+      "expected_output": "Mentor explains one intuitive distinction in chat, avoids premature equations, and uses a diagram only when it materially improves the explanation.",
+      "files": [],
+      "expectations": [
+        "Chat remains primary for the initial explanation.",
+        "The mentor checks understanding without turning the opening into a scored test."
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "I am an experienced Python developer but have not used typing.Protocol. Teach structural subtyping quickly, then give me a small runnable example that exposes a real design mistake.",
+      "expected_output": "Mentor compresses basics, presents a realistic runnable Python example, and reacts automatically to execution output.",
+      "files": [],
+      "expectations": [
+        "The work surface contains runnable Python and one clear design problem.",
+        "Successful or failing output returns to the mentor without a redundant confirmation checklist."
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "I am new to Rust. Explain one concrete problem borrowing solves before asking me to change code.",
+      "expected_output": "Mentor explains ownership or borrowing in plain language, then presents one complete runnable example and one small change.",
+      "files": [],
+      "expectations": [
+        "The compiler result automatically drives mentor feedback.",
+        "The learner is not asked to check off output the browser already captured."
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "Teach me SQL from the beginning. Give me a tiny books table and let me try selecting a column.",
+      "expected_output": "Mentor presents a subject-native SQL activity with pure SQL in the learner editor, hidden database setup, and structured table results.",
+      "files": [],
+      "expectations": [
+        "The learner-facing editor contains SQL only; Python, sqlite3 connection code, and fixture setup are not visible.",
+        "The dataset and query result appear as tables rather than raw terminal output.",
+        "The SQL runner is selected through hidden prefab execution metadata."
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "Teach a topic whose interactive example needs backend scaffolding that is not itself part of the lesson.",
+      "expected_output": "Agent keeps infrastructure backstage and presents only subject-relevant artifacts, actions, and feedback.",
+      "files": [],
+      "expectations": [
+        "Wrappers, fixtures, imports, compiler flags, and transport code remain hidden unless the learner asks about them.",
+        "If no subject-native runner exists, the agent uses a non-runnable native artifact rather than another language as a wrapper.",
+        "Feedback is rendered beside the relevant artifact in a subject-appropriate form."
+      ]
+    }
+  ]
+}

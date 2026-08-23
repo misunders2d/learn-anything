@@ -1,0 +1,14 @@
+{
+  "id": "codex-cli",
+  "description": "Persistent browser mentor composition using the installed Codex headless CLI.",
+  "blocks": [
+    "server.node-sse",
+    "web.dynamic-stage",
+    "adapter.codex-cli",
+    "execution.host-fixed-runners"
+  ],
+  "mentorBridge": "codex-exec",
+  "preferredProtocols": ["AG-UI-shaped-events", "A2UI-opaque-payload"],
+  "degraded": ["mentor-output-arrives-after-headless-turn", "host-execution"],
+  "requiredOutcome": "usable-dynamic-adaptive-browser"
+}

@@ -1,0 +1,65 @@
+{
+  "name": "@misunders2d/learn-anything",
+  "version": "0.1.0",
+  "description": "Constructor skill and prefab assets for adaptive browser-based learning workspaces",
+  "keywords": [
+    "agent-skill",
+    "coding-agent",
+    "learning",
+    "adaptive-ui",
+    "local-first"
+  ],
+  "type": "module",
+  "bin": {
+    "learn-anything": "bin/learn-anything.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/misunders2d/learn-anything.git"
+  },
+  "homepage": "https://github.com/misunders2d/learn-anything#readme",
+  "bugs": {
+    "url": "https://github.com/misunders2d/learn-anything/issues"
+  },
+  "files": [
+    "SKILL.md",
+    "README.md",
+    "bin",
+    "blocks",
+    "profiles",
+    "references",
+    "scripts"
+  ],
+  "scripts": {
+    "build": "npm run build:web",
+    "build:web": "node scripts/clean-web.mjs && esbuild blocks/web/src/app.jsx --bundle --format=esm --splitting --minify --outdir=blocks/web/dist --chunk-names=chunks/[name]-[hash] && tailwindcss -i blocks/web/src/input.css -o blocks/web/dist/app.css --minify && node scripts/copy-web-assets.mjs",
+    "test:browser": "npm run build && node scripts/browser-acceptance.mjs",
+    "probe": "node bin/learn-anything.mjs probe",
+    "construct": "node bin/learn-anything.mjs create",
+    "smoke": "node bin/learn-anything.mjs smoke",
+    "pretest": "npm run build",
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.241",
+    "dompurify": "3.4.14",
+    "marked": "18.0.10",
+    "mermaid": "11.17.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "esbuild": "0.28.2",
+    "tailwindcss": "4.3.3"
+  },
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  }
+}

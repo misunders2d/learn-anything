@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Learn Anything</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <button id="mentor-rescue" type="button" aria-label="Return to mentor chat">Ask mentor</button>
+    <div id="root"></div>
+    <script>
+      (() => {
+        const root = document.getElementById("root");
+        const rescue = document.getElementById("mentor-rescue");
+        document.body.dataset.focus = "chat";
+
+        rescue.addEventListener("click", () => {
+          if (document.body.dataset.crashed === "1" || !root.firstElementChild) {
+            window.location.reload();
+            return;
+          }
+          document.body.dataset.rescue = "1";
+          document.body.dataset.rescueSurface = document.body.dataset.surfaceId || "";
+          window.dispatchEvent(new Event("learn-anything:rescue-chat"));
+        });
+
+        const revealBeforeMount = () => {
+          if (!root.firstElementChild) document.body.dataset.crashed = "1";
+        };
+        window.addEventListener("error", revealBeforeMount);
+        window.addEventListener("unhandledrejection", revealBeforeMount);
+        window.setTimeout(() => {
+          if (!root.firstElementChild) revealBeforeMount();
+        }, 3000);
+      })();
+    </script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

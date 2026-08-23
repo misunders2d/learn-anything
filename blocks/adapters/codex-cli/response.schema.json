@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message", "focus", "title", "stage_json", "target_component_id", "target_quote"],
+  "properties": {
+    "message": { "type": "string", "minLength": 1 },
+    "focus": { "type": "string", "enum": ["chat", "work"] },
+    "title": { "type": "string", "minLength": 1 },
+    "stage_json": { "type": ["string", "null"] },
+    "target_component_id": { "type": ["string", "null"] },
+    "target_quote": { "type": ["string", "null"] }
+  }
+}
