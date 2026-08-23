@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { availableRunners, runCode } from "../blocks/execution/host-runner.mjs";
+import { availableRunners, runCode } from "../skills/learn-anything/blocks/execution/host-runner.mjs";
 
 test("JavaScript runner executes fixed command without shell", async () => {
   const workDir = await mkdtemp(join(tmpdir(), "learn-anything-runner-"));

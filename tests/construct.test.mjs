@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { constructSession, slugifyTopic } from "../scripts/construct.mjs";
-import { probeCapabilities } from "../scripts/probe.mjs";
+import { constructSession, slugifyTopic } from "../skills/learn-anything/scripts/construct.mjs";
+import { probeCapabilities } from "../skills/learn-anything/scripts/probe.mjs";
 
 test("slugifyTopic creates stable bounded session names", () => {
   assert.equal(slugifyTopic(" Rust: Ownership & Lifetimes! "), "rust-ownership-lifetimes");

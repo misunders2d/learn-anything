@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { constructSession, kitRoot } from "../scripts/construct.mjs";
-import { smokeSession } from "../scripts/smoke.mjs";
+import { constructSession, kitRoot } from "../skills/learn-anything/scripts/construct.mjs";
+import { smokeSession } from "../skills/learn-anything/scripts/smoke.mjs";
 
 test("isolated smoke proves assembled browser round trip without polluting transcript", async () => {
   const root = await mkdtemp(join(tmpdir(), "learn-anything-server-"));

@@ -10,7 +10,7 @@ import test from "node:test";
 
 const execFileAsync = promisify(execFile);
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const cli = join(projectRoot, "bin/learn-anything.mjs");
+const cli = join(projectRoot, "skills/learn-anything/bin/learn-anything.mjs");
 
 test("public CLI probes, constructs, resumes, and smoke-validates a workspace", async () => {
   const root = await mkdtemp(join(tmpdir(), "learn-anything-cli-"));

@@ -1,9 +1,11 @@
 {
   "name": "@misunders2d/learn-anything",
-  "version": "0.1.0",
-  "description": "Constructor skill and prefab assets for adaptive browser-based learning workspaces",
+  "version": "0.1.1",
+  "description": "Build adaptive browser learning workspaces for any topic or project",
   "keywords": [
     "agent-skill",
+    "pi-package",
+    "omp",
     "coding-agent",
     "learning",
     "adaptive-ui",
@@ -11,7 +13,12 @@
   ],
   "type": "module",
   "bin": {
-    "learn-anything": "bin/learn-anything.mjs"
+    "learn-anything": "skills/learn-anything/bin/learn-anything.mjs"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
   },
   "repository": {
     "type": "git",
@@ -22,21 +29,16 @@
     "url": "https://github.com/misunders2d/learn-anything/issues"
   },
   "files": [
-    "SKILL.md",
     "README.md",
-    "bin",
-    "blocks",
-    "profiles",
-    "references",
-    "scripts"
+    "skills"
   ],
   "scripts": {
     "build": "npm run build:web",
-    "build:web": "node scripts/clean-web.mjs && esbuild blocks/web/src/app.jsx --bundle --format=esm --splitting --minify --outdir=blocks/web/dist --chunk-names=chunks/[name]-[hash] && tailwindcss -i blocks/web/src/input.css -o blocks/web/dist/app.css --minify && node scripts/copy-web-assets.mjs",
-    "test:browser": "npm run build && node scripts/browser-acceptance.mjs",
-    "probe": "node bin/learn-anything.mjs probe",
-    "construct": "node bin/learn-anything.mjs create",
-    "smoke": "node bin/learn-anything.mjs smoke",
+    "build:web": "node skills/learn-anything/scripts/clean-web.mjs && esbuild skills/learn-anything/blocks/web/src/app.jsx --bundle --format=esm --splitting --minify --outdir=skills/learn-anything/blocks/web/dist --chunk-names=chunks/[name]-[hash] && tailwindcss -i skills/learn-anything/blocks/web/src/input.css -o skills/learn-anything/blocks/web/dist/app.css --minify && node skills/learn-anything/scripts/copy-web-assets.mjs",
+    "test:browser": "npm run build && node skills/learn-anything/scripts/browser-acceptance.mjs",
+    "probe": "node skills/learn-anything/bin/learn-anything.mjs probe",
+    "construct": "node skills/learn-anything/bin/learn-anything.mjs create",
+    "smoke": "node skills/learn-anything/bin/learn-anything.mjs smoke",
     "pretest": "npm run build",
     "test": "node --test tests/*.test.mjs",
     "check": "npm test"

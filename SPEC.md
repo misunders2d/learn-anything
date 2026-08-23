@@ -260,16 +260,19 @@ Each block must document its requirements, capabilities provided, configuration 
 ```text
 learn-anything/
 ├── package.json
-├── SKILL.md              # Detection, selection, assembly, launch, and supervision instructions
-├── blocks/
-│   ├── server/           # Complete reusable server and event-bridge blocks
-│   ├── web/              # Complete reusable dynamic browser workspace
-│   ├── adapters/         # Harness adapters, interface, and bridge templates
-│   ├── execution/        # Container and host-execution runners
-│   └── optional/         # Voice and specialized playground blocks
-├── scripts/              # Capability probes, bootstrap helpers, and smoke checks
-├── profiles/             # Known-good reference compositions and fallback profiles
-└── references/           # Protocol schemas, component catalog, and pedagogical guidance
+├── README.md
+└── skills/
+    └── learn-anything/
+        ├── SKILL.md              # Detection, selection, assembly, launch, and supervision instructions
+        ├── blocks/
+        │   ├── server/           # Complete reusable server and event-bridge blocks
+        │   ├── web/              # Complete reusable dynamic browser workspace
+        │   ├── adapters/         # Harness adapters, interface, and bridge templates
+        │   ├── execution/        # Container and host-execution runners
+        │   └── optional/         # Voice and specialized playground blocks
+        ├── scripts/              # Capability probes, bootstrap helpers, and smoke checks
+        ├── profiles/             # Known-good reference compositions and fallback profiles
+        └── references/           # Protocol schemas, component catalog, and pedagogical guidance
 ```
 
 ---

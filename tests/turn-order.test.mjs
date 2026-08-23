@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mentorItemIsSuperseded } from "../blocks/adapters/codex-cli/turn-order.mjs";
+import { mentorItemIsSuperseded } from "../skills/learn-anything/blocks/adapters/codex-cli/turn-order.mjs";
 
 const older = { id: "older", role: "user", content: "Rust", createdAt: "2026-08-23T12:00:00.000Z" };
 const newer = { id: "newer", role: "user", content: "Python Protocol", createdAt: "2026-08-23T12:01:00.000Z" };

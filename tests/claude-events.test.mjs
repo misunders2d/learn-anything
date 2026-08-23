@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createClaudeEventState, mapClaudeMessage } from "../blocks/adapters/claude-agent-sdk/events.mjs";
+import { createClaudeEventState, mapClaudeMessage } from "../skills/learn-anything/blocks/adapters/claude-agent-sdk/events.mjs";
 
 test("Claude partial text maps to AG-UI text lifecycle", () => {
   const state = createClaudeEventState();

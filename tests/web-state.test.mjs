@@ -5,8 +5,8 @@ import {
   createPartialMessage,
   mergeSnapshotMessages,
   upsertMessage,
-} from "../blocks/web/src/message-state.mjs";
-import { resolveFocus, shouldReleaseRescue } from "../blocks/web/src/workspace-state.mjs";
+} from "../skills/learn-anything/blocks/web/src/message-state.mjs";
+import { resolveFocus, shouldReleaseRescue } from "../skills/learn-anything/blocks/web/src/workspace-state.mjs";
 
 test("message start keeps a stable object after the partial map is cleared", () => {
   const event = { messageId: "message-1", role: "user" };
