@@ -9,7 +9,9 @@ import {
   mergeSnapshotMessages,
   upsertMessage,
 } from "./message-state.mjs";
-import { resolveFocus, shouldReleaseRescue, stageComponents } from "./workspace-state.mjs";
+import { activeSurface, applyA2uiMessages, resolveDataBinding, surfaceComponents } from "../../a2ui/state.mjs";
+import { indentWithTab } from "./editor-input.mjs";
+import { connectionIssueFor, resolveFocus, shouldReleaseRescue } from "./workspace-state.mjs";
 
 marked.setOptions({ gfm: true, breaks: true });
 mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark", flowchart: { htmlLabels: false } });
@@ -83,19 +85,17 @@ function Markdown({ content, className = "" }) {
   return <div className={`message-markdown ${className}`} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-function WorkspaceStatus({ connected, degraded, hasRunnableCode }) {
+function WorkspaceStatus({ connected, mentorAttached, degraded, hasRunnableCode }) {
   const notices = [...new Set((degraded || []).flatMap((item) => {
     if (item === "host-execution") return hasRunnableCode ? ["code runs on this computer"] : [];
-    if (item === "mentor-output-may-arrive-per-turn" || item === "mentor-output-arrives-after-headless-turn") return ["replies arrive after each turn"];
+    if (item === "mentor-output-may-arrive-per-turn" || item === "mentor-output-arrives-after-headless-turn") return ["turn-complete replies"];
     return [item.replaceAll("-", " ")];
   }))];
-  const delayedReplies = notices.includes("replies arrive after each turn");
   return (
     <div className="workspace-status" title={notices.join(" · ")}>
-      <span className={`status-dot ${connected ? "is-connected" : "is-connecting"}`} />
-      <span>{connected ? "Local workspace" : "Connecting"}</span>
-      {delayedReplies && <span className="status-detail">Replies after send</span>}
-      {hasRunnableCode && <span className="status-detail">Runs here</span>}
+      <span className={`status-dot ${connected && mentorAttached ? "is-connected" : "is-connecting"}`} />
+      <span>{!connected ? "Connecting" : mentorAttached ? "Mentor ready" : "Mentor unavailable"}</span>
+      {hasRunnableCode && <span className="status-detail">Local runner</span>}
     </div>
   );
 }
@@ -108,7 +108,7 @@ function ChatComposer({ draft, setDraft, sending, sendError, mentorState, onSend
         {mentorState === "responding" && <><span className="thinking-dot" />Writing a response…</>}
       </div>
       <div className="composer-control">
-        <textarea ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void onSend(); } }} rows={centered ? 3 : 2} placeholder={centered ? "What would you like to understand, build, or practice?" : "Ask a follow-up or share what you tried…"} />
+        <textarea name="mentor-question" ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void onSend(); } }} rows={centered ? 3 : 2} placeholder={centered ? "What would you like to understand, build, or practice?" : "Ask a follow-up or share what you tried…"} />
         <button type="submit" disabled={!draft.trim() || sending} aria-label="Send message">{sending ? "Sending…" : "Send"}</button>
       </div>
       {centered && <p className="composer-hint">Enter to send · Shift + Enter for a new line</p>}
@@ -156,7 +156,17 @@ function latestWorkExchange(messages) {
 
 function CodeEditor({ language, value, onChange, onSelect }) {
   const rows = Math.max(4, Math.min(18, value.split(/\r?\n/).length + 2));
-  return <textarea aria-label={`${language} editor`} rows={rows} className="code-fallback" value={value} onChange={(event) => onChange(event.target.value)} onSelect={(event) => {
+  return <textarea name={`${language}-editor`} aria-label={`${language} editor`} rows={rows} className="code-fallback" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    const input = event.currentTarget;
+    const next = indentWithTab(input.value, input.selectionStart, input.selectionEnd);
+    onChange(next.value);
+    requestAnimationFrame(() => {
+      input.focus();
+      input.setSelectionRange(next.selectionStart, next.selectionEnd);
+    });
+  }} onSelect={(event) => {
     const quote = event.currentTarget.value.slice(event.currentTarget.selectionStart, event.currentTarget.selectionEnd).trim();
     if (quote) onSelect?.(quote);
   }} />;
@@ -268,7 +278,7 @@ function ParameterBlock({ component }) {
   function submit(control, value) {
     api("/api/action", { method: "POST", body: JSON.stringify({ action: "parameter_change", componentId: component.id, controlId: control.id, value: Number(value) }) }).catch(() => {});
   }
-  return <section className="parameter-surface">{component.title && <h3>{component.title}</h3>}{(component.controls || []).map((control) => <label key={control.id}><span>{control.label}</span><output>{values[control.id]}</output><input type="range" min={control.min} max={control.max} step={control.step || 1} value={values[control.id]} onChange={(event) => setValues((current) => ({ ...current, [control.id]: Number(event.target.value) }))} onMouseUp={(event) => submit(control, event.currentTarget.value)} onTouchEnd={(event) => submit(control, event.currentTarget.value)} onKeyUp={(event) => submit(control, event.currentTarget.value)} /></label>)}</section>;
+  return <section className="parameter-surface">{component.title && <h3>{component.title}</h3>}{(component.controls || []).map((control) => <label key={control.id}><span>{control.label}</span><output>{values[control.id]}</output><input name={control.id} type="range" min={control.min} max={control.max} step={control.step || 1} value={values[control.id]} onChange={(event) => setValues((current) => ({ ...current, [control.id]: Number(event.target.value) }))} onMouseUp={(event) => submit(control, event.currentTarget.value)} onTouchEnd={(event) => submit(control, event.currentTarget.value)} onKeyUp={(event) => submit(control, event.currentTarget.value)} /></label>)}</section>;
 }
 
 function StageComponent({ component, onContext }) {
@@ -301,7 +311,7 @@ function StageComponent({ component, onContext }) {
         <div>
           {(component.items || []).map((item) => (
             <label key={item.id}>
-              <input type="checkbox" checked={Boolean(item.done)} onChange={() => api("/api/action", { method: "POST", body: JSON.stringify({ action: "checklist_toggle", componentId: component.id, itemId: item.id, done: !item.done }) })} />
+              <input name={item.id} type="checkbox" checked={Boolean(item.done)} onChange={() => api("/api/action", { method: "POST", body: JSON.stringify({ action: "checklist_toggle", componentId: component.id, itemId: item.id, done: !item.done }) })} />
               <span className={item.done ? "is-done" : ""}>{item.label}</span>
             </label>
           ))}
@@ -312,12 +322,55 @@ function StageComponent({ component, onContext }) {
   return <pre className="unknown-surface">{JSON.stringify(component, null, 2)}</pre>;
 }
 
+function bindComponent(component, dataModel) {
+  return Object.fromEntries(Object.entries(component).map(([key, value]) => [key, resolveDataBinding(value, dataModel)]));
+}
+
+function A2uiNode({ componentId, surface, onContext, replyFor }) {
+  const source = surface?.components?.[componentId];
+  if (!source) return <section className="activity-error">Canvas component “{componentId}” is missing.</section>;
+  const component = bindComponent(source, surface.dataModel || {});
+  if (component.component === "Column" || component.component === "Row") {
+    const children = Array.isArray(component.children) ? component.children : [];
+    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} replyFor={replyFor} />)}</div>;
+  }
+  const normalized = { ...component, type: String(component.component || "unknown").toLowerCase() };
+  const label = component.title || component.question || String(component.component || "component").toLowerCase();
+  const reply = replyFor(component.id);
+  return (
+    <div data-component-id={component.id || ""} onMouseUp={() => {
+      const quote = window.getSelection()?.toString().trim();
+      if (quote && component.id) onContext({ componentId: component.id, label, quote: quote.slice(0, 2000) });
+    }} className="stage-component">
+      <ErrorBoundary>
+        <StageComponent component={normalized} onContext={onContext} />
+      </ErrorBoundary>
+      <button type="button" onClick={() => onContext({ componentId: component.id, label })} className="ask-component">Ask about this</button>
+      {reply && <aside className="anchored-mentor-note">
+        <div className="anchored-note-label">Mentor on this part</div>
+        {reply.context?.quote && <blockquote>{reply.context.quote}</blockquote>}
+        <Markdown content={reply.content} />
+      </aside>}
+    </div>
+  );
+}
+
+function applyCanvasPayload(current, payload) {
+  if (!payload) return current;
+  if (!payload.messages?.length) return current ? { ...current, focus: payload.focus || current.focus } : current;
+  const base = current?.surfaces ? current : { focus: "chat", activeSurfaceId: null, surfaces: {} };
+  const next = applyA2uiMessages(base, payload.messages, { focus: payload.focus });
+  if (payload.activeSurfaceId && next.surfaces[payload.activeSurfaceId]) next.activeSurfaceId = payload.activeSurfaceId;
+  return next;
+}
+
 function App() {
   const [topic, setTopic] = useState("Learning workspace");
   const [messages, setMessages] = useState([]);
-  const [stage, setStage] = useState(null);
+  const [canvas, setCanvas] = useState(null);
   const [degraded, setDegraded] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [mentorAttached, setMentorAttached] = useState(false);
   const [connectionIssue, setConnectionIssue] = useState(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -328,10 +381,12 @@ function App() {
   const messageEndRef = useRef(null);
   const composerRef = useRef(null);
 
-  const focus = resolveFocus(stage);
-  const components = stageComponents(stage);
-  const hasRunnableCode = components.some((component) => component?.type === "code" && component.runnable !== false);
+  const focus = resolveFocus(canvas);
+  const surface = activeSurface(canvas);
+  const components = surfaceComponents(canvas);
+  const hasRunnableCode = components.some((component) => component?.component === "Code" && component.runnable !== false);
   const workExchange = latestWorkExchange(messages);
+  const canvasTitle = surface?.dataModel?.title || topic;
 
   function replyFor(componentId) {
     return [...messages].reverse().find((message) => message?.role === "assistant" && message?.source === "work" && message?.context?.componentId === componentId) || null;
@@ -343,13 +398,13 @@ function App() {
 
   useEffect(() => {
     document.body.dataset.focus = focus;
-    document.body.dataset.surfaceId = stage?.surfaceId || "";
+    document.body.dataset.surfaceId = canvas?.activeSurfaceId || "";
     const rescuedSurfaceId = document.body.dataset.rescueSurface || "";
-    if (document.body.dataset.rescue === "1" && shouldReleaseRescue(stage, rescuedSurfaceId)) {
+    if (document.body.dataset.rescue === "1" && shouldReleaseRescue(canvas, rescuedSurfaceId)) {
       delete document.body.dataset.rescue;
       delete document.body.dataset.rescueSurface;
     }
-  }, [focus, stage?.focus, stage?.surfaceId]);
+  }, [focus, canvas?.focus, canvas?.activeSurfaceId]);
 
   useEffect(() => {
     const rescue = () => requestAnimationFrame(() => composerRef.current?.focus());
@@ -362,24 +417,12 @@ function App() {
     let cancelled = false;
     let lossTimer = null;
 
-    function explainConnection(error) {
-      if (error?.status === 401) {
-        return {
-          title: "This tab belongs to an earlier workspace",
-          message: "Use the newest Learn Anything tab opened by your coding agent. Your saved work is still safe.",
-        };
-      }
-      return {
-        title: "Connection lost",
-        message: "Your work is saved locally. Restart the workspace from your coding agent, then reload this page.",
-      };
-    }
 
     async function diagnoseLoss() {
       try {
         await api("/api/session");
       } catch (error) {
-        if (!cancelled) setConnectionIssue(explainConnection(error));
+        if (!cancelled) setConnectionIssue(connectionIssueFor(error));
       }
     }
 
@@ -387,7 +430,7 @@ function App() {
       try {
         await api("/api/session");
       } catch (error) {
-        if (!cancelled) setConnectionIssue(explainConnection(error));
+        if (!cancelled) setConnectionIssue(connectionIssueFor(error));
         return;
       }
       if (cancelled) return;
@@ -413,9 +456,10 @@ function App() {
       if (event.type === "STATE_SNAPSHOT") {
         setTopic(event.snapshot.topic || "Learning workspace");
         setMessages(mergeSnapshotMessages(event.snapshot.transcript, partial.current));
-        setStage(event.snapshot.stage || null);
+        setCanvas((current) => applyCanvasPayload(current, event.snapshot.canvas));
         setDegraded(event.snapshot.assembly?.degraded || []);
         setMentorState(event.snapshot.mentorState || "idle");
+        setMentorAttached(Boolean(event.snapshot.mentorAttached));
       } else if (event.type === "TEXT_MESSAGE_START") {
         const pendingMessage = createPartialMessage(event);
         partial.current.set(event.messageId, pendingMessage);
@@ -430,7 +474,9 @@ function App() {
         partial.current.delete(event.messageId);
         if (finished?.role === "assistant") setMentorState("idle");
       } else if (event.type === "CUSTOM" && event.name === "a2ui") {
-        setStage(event.value);
+        setCanvas((current) => applyCanvasPayload(current, event.value));
+      } else if (event.type === "CUSTOM" && event.name === "mentor_presence") {
+        setMentorAttached(Boolean(event.value?.attached));
       } else if (event.type === "CUSTOM" && event.name === "mentor_state") {
         setMentorState(event.value?.state || "idle");
       }
@@ -455,7 +501,7 @@ function App() {
         body: JSON.stringify({
           text,
           source,
-          surfaceId: source === "work" ? stage?.surfaceId || null : null,
+          surfaceId: source === "work" ? canvas?.activeSurfaceId || null : null,
           context: source === "work" ? workContext : null,
         }),
       });
@@ -463,7 +509,12 @@ function App() {
       if (source === "work") setWorkContext(null);
       setMentorState("waiting");
     } catch (error) {
-      setSendError(error.message);
+      const issue = connectionIssueFor(error);
+      setSendError(issue.title === "Workspace stopped" ? "" : error.message);
+      setConnected(false);
+      setMentorAttached(false);
+      setMentorState("idle");
+      setConnectionIssue(issue);
     } finally {
       setSending(false);
     }
@@ -478,7 +529,7 @@ function App() {
         <header className="app-header">
           <div className="brand-lockup"><span className="brand-mark">L</span><span>Learn anything</span></div>
           {!emptyConversation && <h1>{topic}</h1>}
-          <WorkspaceStatus connected={connected} degraded={degraded} hasRunnableCode={hasRunnableCode} />
+          <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
         </header>
         {emptyConversation ? (
           <div className="welcome-shell">
@@ -500,33 +551,21 @@ function App() {
         )}
       </section>
 
-      <section className="stage-pane">
+      <section className="stage-pane" aria-label="Agent-generated learning canvas">
         <header className="stage-header">
-          <div><span className="stage-topic">{topic}</span><h2>{stage?.title || "Lesson workspace"}</h2></div>
+          <div><span className="stage-topic">{topic}</span><h2>{canvasTitle}</h2></div>
+          <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
         </header>
         <div className="stage-scroll scroll-region">
           <div className="stage-column">
-            {components.length ? components.map((component, index) => (
-              <div key={component?.id || `${component?.type || "invalid"}-${index}`} data-component-id={component?.id || ""} onMouseUp={() => {
-                const quote = window.getSelection()?.toString().trim();
-                if (quote && component?.id) setWorkContext({ componentId: component.id, label: component.title || component.question || component.type, quote: quote.slice(0, 2000) });
-              }} className="stage-component group relative">
-                <ErrorBoundary>
-                  <StageComponent component={component} onContext={setWorkContext} />
-                </ErrorBoundary>
-                <button type="button" onClick={() => setWorkContext({ componentId: component.id, label: component.title || component.question || component.type })} className="ask-component ml-auto mt-2 block rounded-md border border-[#303949] bg-[#0d1118] px-2.5 py-1.5 text-xs text-slate-400 hover:border-blue-400 hover:text-white">Ask about this</button>
-                {replyFor(component?.id) && <aside className="anchored-mentor-note mt-2 rounded-xl border border-blue-500/35 bg-blue-500/10 p-4 text-sm leading-6">
-                  <div className="mb-1 text-[0.68rem] uppercase tracking-[0.18em] text-blue-300">Mentor on this part</div>
-                  {replyFor(component.id).context?.quote && <blockquote className="mb-3 border-l-2 border-blue-400/60 pl-3 font-mono text-xs text-blue-100">{replyFor(component.id).context.quote}</blockquote>}
-                  <Markdown content={replyFor(component.id).content} />
-                </aside>}
-              </div>
-            )) : null}
-            {workExchange && !workExchange.answer?.context?.componentId && <section className="work-mentor-reply stage-card rounded-xl p-4 text-sm leading-6">
-              <div className="mb-1 text-[0.68rem] uppercase tracking-[0.18em] text-blue-300">Your question</div>
+            {surface?.components?.root
+              ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} replyFor={replyFor} />
+              : null}
+            {workExchange && !workExchange.answer?.context?.componentId && <section className="work-mentor-reply">
+              <div className="anchored-note-label">Your question</div>
               <Markdown content={workExchange.question.content} />
-              <div className="mb-1 mt-4 text-[0.68rem] uppercase tracking-[0.18em] text-slate-400">Mentor</div>
-              {workExchange.answer ? <Markdown content={workExchange.answer.content} /> : <p className="text-slate-400">{mentorState === "responding" ? "Responding…" : "Waiting…"}</p>}
+              <div className="anchored-note-label">Mentor</div>
+              {workExchange.answer ? <Markdown content={workExchange.answer.content} /> : <p>{mentorState === "responding" ? "Responding…" : "Waiting…"}</p>}
             </section>}
           </div>
         </div>
@@ -537,7 +576,7 @@ function App() {
               {mentorState === "responding" && <><span className="thinking-dot" />Adding guidance…</>}
             </div>
             <div className="work-question-control">
-              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage("work"); } }} rows="1" aria-label="Question about this activity" placeholder="Ask about this activity…" className="work-question-input" />
+              <textarea name="work-question" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage("work"); } }} rows="1" aria-label="Question about this activity" placeholder="Ask about this activity…" className="work-question-input" />
               <button type="submit" disabled={!draft.trim() || sending}>Ask</button>
             </div>
             {workContext && <div className="context-chip">

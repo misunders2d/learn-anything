@@ -345,13 +345,14 @@ try {
   checks.push("refresh-restores-real-transcript");
 
   const persisted = JSON.parse(await readFile(join(sessionDir, "session.json"), "utf8"));
+  const surface = persisted.canvas?.surfaces?.[persisted.canvas.activeSurfaceId] || null;
   process.stdout.write(`${JSON.stringify({
     ok: true,
     checks,
-    stage: {
-      focus: persisted.stage?.focus || "chat",
-      title: persisted.stage?.title || "",
-      componentTypes: (persisted.stage?.components || []).map((component) => component.type),
+    canvas: {
+      focus: persisted.canvas?.focus || "chat",
+      title: surface?.dataModel?.title || "",
+      componentTypes: Object.values(surface?.components || {}).map((component) => component.component),
     },
     lastMentorMessage: persisted.transcript?.filter((message) => message.role === "assistant").at(-1)?.content || "",
   }, null, 2)}\n`);

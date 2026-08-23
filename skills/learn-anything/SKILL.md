@@ -22,10 +22,10 @@ Use the bundled browser shell as a visual system, not as a generic dashboard tem
 
 1. Determine kit root from this `SKILL.md` location.
 2. Run `node <kit-root>/bin/learn-anything.mjs probe --json`.
-3. Choose smallest compatible profile:
-   - Read `profiles/reference.json` when a headless streaming mentor adapter is available.
-   - Read `profiles/codex-cli.json` when running under Codex and the `codex` CLI is installed.
-   - Read `profiles/portable-shell.json` for any harness with shell tools.
+3. Choose the smallest compatible persistent profile:
+   - Read `profiles/reference.json` only when the Claude Agent SDK is the active authenticated adapter.
+   - Read `profiles/codex-cli.json` whenever the installed Codex CLI is the available persistent adapter, including OMP and Pi.
+   - Use `profiles/portable-shell.json` only for explicit manual/degraded operation. It cannot wake a terminal agent from the browser and must never be presented as live mentorship.
 4. Choose learning root:
    - Current project goal: `<project-root>/.learnings/<topic-slug>/`.
    - General topic: `~/learnings/<topic-slug>/`.
@@ -43,8 +43,8 @@ Use the bundled browser shell as a visual system, not as a generic dashboard tem
    ```
 
 8. Capture `url`, `launchUrl`, and `accessToken` from start output. Open only `launchUrl`. Verify `/healthz` before telling learner workspace is ready. Never expose the token to remote pages or lesson content.
-9. `start` automatically attaches the bundled Claude or Codex mentor for those profiles. Require `mentorAttached: true`. For the shell fallback, read `references/shell-mentor.md` and long-poll from the current agent turn.
-10. Keep browser interaction primary after launch. Persist milestone notes and update stage when lesson needs a different interaction.
+9. `start` automatically attaches the bundled Claude or Codex mentor. Require `mentorAttached: true`; normal launch fails instead of opening an unstaffed workspace. `--no-mentor` is explicit manual/test mode only.
+10. Keep browser interaction primary after launch. Persist milestone notes and update the A2UI canvas when the lesson needs a different interaction.
 
 ## Composition rules
 
@@ -70,17 +70,17 @@ Keep implementation scaffolding backstage. The learner sees and edits the subjec
 
 Treat browser events as observation, not paperwork. The mentor already receives submitted code, execution output, errors, and interactive answers; react to that evidence automatically. Unsent drafts persist but do not wake the mentor. Do not ask the learner to repeat captured evidence or tick a box confirming it. Use checklists only for external actions the workspace cannot observe.
 
-## Dynamic stage
+## Dynamic A2UI canvas
 
-Use `node <kit-root>/scripts/mentor.mjs stage --url <server-url> --token <access-token> --mentor-id <stable-id> --file <payload.json>` to update stage in shell mode. Read `references/stage-catalog.md` for supported components. Prefer smallest surface that helps current lesson.
+The agent creates and updates the work canvas with actual A2UI v0.9 messages. In shell/manual mode use `node <kit-root>/scripts/mentor.mjs canvas --url <server-url> --token <access-token> --mentor-id <stable-id> --file <payload.json>`. The payload is `{ "focus": "chat|work", "messages": [...] }`; each message is one `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface` envelope with `"version": "v0.9"`. Read `references/stage-catalog.md` for the learning component catalog.
 
-Drive the whole browser flow with the stage envelope's `focus`: use `chat` for broad discussion and debriefing; use `work` when the learner has one clear interactive task. Set `focus` on every stage update. Every work surface keeps the browser-owned compact question composer visible. Text/code selection or **Ask about this** supplies a component anchor and optional excerpt. Answer that clarification beside the targeted component without replacing or leaving the work surface. Anchor execution feedback to its code component when useful. Do not create split views or ask the learner to manage layout. The browser-owned **Ask mentor** rescue control must remain available outside agent-rendered content; preserve active work underneath it.
+Drive the whole browser flow with `focus`: use `chat` for broad discussion and debriefing; use `work` when the learner has one clear interactive task. Every work surface keeps the browser-owned compact question composer visible. Text/code selection or **Ask about this** supplies a component anchor and optional excerpt. Answer that clarification beside the targeted component without replacing or leaving the work surface. Anchor execution feedback to its code component when useful. Do not create split views or ask the learner to manage layout. The browser-owned **Ask mentor** rescue control must remain available outside agent-rendered content; preserve active work underneath it.
 
 Prefer artifact, action, and feedback in one local surface. Structured results belong beside the artifact that produced them; do not add a global terminal console when a table, targeted diagnostic, annotation, or figure expresses the result more clearly.
 
 ## Resume
 
-Use existing session directory. Do not replace transcript, exercises, stage, or assembly manifest. Start command repaints saved browser state before mentor reconnects.
+Use the existing session directory. Do not replace transcript, exercises, A2UI canvas, or assembly manifest. Start repaints saved browser state before the persistent mentor reconnects.
 
 ## Validation
 
@@ -90,7 +90,7 @@ Before reporting ready:
 node <kit-root>/bin/learn-anything.mjs smoke --session "<session-dir>"
 ```
 
-Then verify the real selected composition in a browser. Type a learner message and click **Send**; observe visible waiting/responding status and an actual mentor reply. Continue until the mentor posts a work surface, ask one question through its compact composer, click its current controls, run code when present, click **Ask mentor**, and verify chat returns without blanking or losing work. Press Enter and Shift+Enter in the composer and refresh once. Do not report ready from API calls, DOM injection, unit tests, or visual inspection alone.
+Then verify the real selected composition in a browser. Type a learner message and click **Send**; observe waiting/responding status and an actual mentor reply without returning to the terminal. Continue until the mentor creates an A2UI work canvas, ask one question through its compact composer, press Tab in the code editor and confirm it indents without moving focus, run code when present, click **Ask mentor**, and verify chat returns without blanking or losing work. Press Enter and Shift+Enter in the composer, refresh once, and stop the launcher to confirm the workspace server exits. Do not report ready from API calls, DOM injection, unit tests, or visual inspection alone.
 
 Also open one stale or invalid session token. It must show explicit recovery guidance within the browser rather than remaining indefinitely on “Connecting” or “Reconnecting.”
 

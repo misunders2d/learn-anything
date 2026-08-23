@@ -3,7 +3,7 @@
   "description": "Preferred dynamic browser composition for a harness with a persistent headless streaming adapter.",
   "blocks": [
     "server.node-sse",
-    "web.dynamic-stage",
+    "web.a2ui-canvas",
     "adapter.claude-agent-sdk",
     "execution.host-fixed-runners"
   ],

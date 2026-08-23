@@ -4,6 +4,13 @@ import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCode, availableRunners } from "../execution/host-runner.mjs";
+import {
+  activeSurface,
+  applyA2uiMessages,
+  canvasEventValue,
+  canvasFromStage,
+  surfaceComponents,
+} from "../a2ui/state.mjs";
 
 const serverDir = dirname(fileURLToPath(import.meta.url));
 const defaultKitRoot = resolve(serverDir, "../..");
@@ -77,42 +84,30 @@ function agEvent(type, fields = {}) {
   return { type, timestamp: Date.now(), ...fields };
 }
 
-function stageComponents(stage) {
-  if (!stage || typeof stage !== "object") return [];
-  return Array.isArray(stage.components) ? stage.components : [stage];
+function canvasComponent(canvas, componentId) {
+  if (!componentId) return null;
+  return surfaceComponents(canvas).find((item) => item?.id === componentId) || null;
 }
 
-function validateStage(stage) {
-  if (!stage || typeof stage !== "object" || Array.isArray(stage)) throw httpError("Stage payload must be an object.", 400);
-  if (stage.focus !== undefined && !["chat", "work"].includes(stage.focus)) throw httpError("Stage focus must be chat or work.", 400);
-  if (stage.components !== undefined && !Array.isArray(stage.components)) throw httpError("Stage components must be an array.", 400);
-  for (const [index, component] of (stage.components || []).entries()) {
-    if (!component || typeof component !== "object" || Array.isArray(component) || typeof component.type !== "string") {
-      throw httpError(`Stage component ${index + 1} must be an object with a type.`, 400);
-    }
-  }
-  return stage;
-}
-
-function updateStageFromAction(stage, action) {
-  const component = stageComponents(stage).find((item) => item?.id === action.componentId);
+function updateCanvasFromAction(canvas, action) {
+  const component = canvasComponent(canvas, action.componentId);
   if (!component) return false;
-  if (action.action === "quiz_answer") {
+  if (action.action === "quiz_answer" && component.component === "Quiz") {
     component.selectedOptionId = action.optionId;
     return true;
   }
-  if (action.action === "checklist_toggle" && Array.isArray(component.items)) {
+  if (action.action === "checklist_toggle" && component.component === "Checklist" && Array.isArray(component.items)) {
     const item = component.items.find((candidate) => candidate.id === action.itemId);
     if (!item) return false;
     item.done = Boolean(action.done);
     return true;
   }
-  if (action.action === "code_change" && component.type === "code" && typeof action.code === "string") {
+  if (action.action === "code_change" && component.component === "Code" && typeof action.code === "string") {
     if (Buffer.byteLength(action.code) > 100_000) throw httpError("Code must be no larger than 100 KB.", 413);
     component.value = action.code;
     return true;
   }
-  if (action.action === "parameter_change" && Array.isArray(component.controls)) {
+  if (action.action === "parameter_change" && component.component === "Params" && Array.isArray(component.controls)) {
     const control = component.controls.find((candidate) => candidate.id === action.controlId);
     if (!control || !Number.isFinite(action.value)) return false;
     control.value = Math.min(Number(control.max), Math.max(Number(control.min), action.value));
@@ -121,32 +116,30 @@ function updateStageFromAction(stage, action) {
   return false;
 }
 
-function updateEditorValue(stage, componentId, code) {
-  if (!componentId) return false;
-  const component = stageComponents(stage).find((item) => item?.id === componentId && item.type === "code");
-  if (!component) return false;
+function updateEditorValue(canvas, componentId, code) {
+  const component = canvasComponent(canvas, componentId);
+  if (!component || component.component !== "Code") return false;
   component.value = code;
   return true;
 }
 
-function runnableComponent(stage, componentId) {
-  if (!componentId) return null;
-  return stageComponents(stage).find((item) => item?.id === componentId && item.type === "code") || null;
+function runnableComponent(canvas, componentId) {
+  const component = canvasComponent(canvas, componentId);
+  return component?.component === "Code" ? component : null;
 }
 
-function runResultKey(stage, componentId) {
-  return stage?.surfaceId && componentId ? `${stage.surfaceId}:${componentId}` : null;
+function runResultKey(canvas, componentId) {
+  return activeSurface(canvas)?.id && componentId ? `${activeSurface(canvas).id}:${componentId}` : null;
 }
 
-function hydrateRunResults(stage, results = {}) {
-  if (!Array.isArray(stage?.components)) return stage;
-  return {
-    ...stage,
-    components: stage.components.map((component) => {
-      const key = runResultKey(stage, component?.id);
-      return key && results[key] ? { ...component, lastResult: results[key] } : component;
-    }),
-  };
+function hydrateRunResults(canvas, results = {}) {
+  const surface = activeSurface(canvas);
+  if (!surface) return canvas;
+  for (const component of Object.values(surface.components || {})) {
+    const key = runResultKey(canvas, component?.id);
+    if (key && results[key]) component.lastResult = results[key];
+  }
+  return canvas;
 }
 
 export async function createLearnAnythingServer({
@@ -161,6 +154,12 @@ export async function createLearnAnythingServer({
   const exercisesDir = join(resolvedSessionDir, "exercises");
   const webRoot = resolve(kitRoot, "blocks/web/dist");
   let session = await readSession(sessionPath);
+  if (!session.canvas) {
+    session.canvas = canvasFromStage(session.stage, session.topic);
+    delete session.stage;
+    session.schemaVersion = 2;
+    await atomicSession(sessionPath, session);
+  }
   if (!session.security?.accessToken) {
     session.security = { ...(session.security || {}), accessToken: randomBytes(32).toString("base64url") };
     await atomicSession(sessionPath, session);
@@ -169,6 +168,7 @@ export async function createLearnAnythingServer({
   const clients = new Set();
   const mentorQueue = [];
   const mentorWaiters = [];
+  const mentorReadyWaiters = new Set();
   const partialMessages = new Map();
   let activeMentorId = null;
   let activeMentorSource = null;
@@ -197,12 +197,28 @@ export async function createLearnAnythingServer({
         if (waiter.mentorId !== mentorId) waiter.finish(STALE_MENTOR);
       }
     }
+    for (const finish of [...mentorReadyWaiters]) finish(activeMentorId);
+    broadcast(agEvent("CUSTOM", { name: "mentor_presence", value: { attached: true } }));
   }
 
   function requireActiveMentor(request) {
     const mentorId = request.headers["x-learn-anything-mentor"];
     if (!mentorId || mentorId !== activeMentorId) throw httpError("Mentor lease is not active.", 409);
     return mentorId;
+  }
+
+  function waitForMentor(timeoutMs = 10_000) {
+    if (activeMentorId) return Promise.resolve(activeMentorId);
+    return new Promise((resolvePromise, reject) => {
+      const finish = (mentorId) => {
+        clearTimeout(timer);
+        mentorReadyWaiters.delete(finish);
+        if (mentorId) resolvePromise(mentorId);
+        else reject(httpError("Mentor did not attach before launch.", 503));
+      };
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      mentorReadyWaiters.add(finish);
+    });
   }
 
   async function scheduleRun(task) {
@@ -300,16 +316,23 @@ export async function createLearnAnythingServer({
       }
     } else if (event.type === "CUSTOM" && event.name === "a2ui" && event.value) {
       if (activeMentorSource === "work") return;
-      const nextStage = validateStage(event.value);
-      session.stage = nextStage.focus === "chat" && !nextStage.components?.length && session.stage?.components?.length
-        ? { ...session.stage, ...nextStage, components: session.stage.components }
-        : nextStage;
+      const payload = plainCanvasPayload(event.value);
+      session.canvas = payload.messages.length
+        ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
+        : { ...session.canvas, focus: payload.focus };
       await persist();
     } else if (event.type === "CUSTOM" && event.name === "mentor_session" && event.value?.sessionId) {
       session.agentSessionId = event.value.sessionId;
       await persist();
     }
     broadcast(event);
+  }
+
+  function plainCanvasPayload(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw httpError("A2UI payload must be an object.", 400);
+    if (!["chat", "work"].includes(value.focus)) throw httpError("A2UI payload focus must be chat or work.", 400);
+    if (!Array.isArray(value.messages)) throw httpError("A2UI payload messages must be an array.", 400);
+    return { focus: value.focus, messages: value.messages };
   }
 
   async function serveStatic(pathname, response) {
@@ -352,6 +375,7 @@ export async function createLearnAnythingServer({
           profile: session.assembly?.profile,
           degraded: session.assembly?.degraded || [],
           runners: availableRunners(),
+          mentorAttached: Boolean(activeMentorId),
         });
         return;
       }
@@ -362,10 +386,11 @@ export async function createLearnAnythingServer({
         sendJson(response, 200, {
           topic: session.topic,
           transcript: session.transcript,
-          stage: session.stage,
+          canvas: session.canvas,
           progress: session.progress,
           assembly: session.assembly,
           mentorState,
+          mentorAttached: Boolean(activeMentorId),
         });
         return;
       }
@@ -381,10 +406,11 @@ export async function createLearnAnythingServer({
           snapshot: {
             topic: session.topic,
             transcript: session.transcript,
-            stage: session.stage,
+            canvas: canvasEventValue(session.canvas),
             progress: session.progress,
             assembly: session.assembly,
             mentorState,
+            mentorAttached: Boolean(activeMentorId),
           },
         }))}\n\n`);
         clients.add(response);
@@ -418,7 +444,7 @@ export async function createLearnAnythingServer({
         broadcast(agEvent("TEXT_MESSAGE_START", { messageId: message.id, role: "user", source, surfaceId, ...(context ? { context } : {}) }));
         broadcast(agEvent("TEXT_MESSAGE_CONTENT", { messageId: message.id, delta: text }));
         broadcast(agEvent("TEXT_MESSAGE_END", { messageId: message.id }));
-        enqueueMentor({ type: "user_message", message, ...(source === "work" ? { stageContext: session.stage } : {}) });
+        enqueueMentor({ type: "user_message", message, ...(source === "work" ? { canvasContext: session.canvas } : {}) });
         sendJson(response, 202, { accepted: true, messageId: message.id });
         return;
       }
@@ -446,29 +472,28 @@ export async function createLearnAnythingServer({
         return;
       }
 
-      if (request.method === "POST" && pathname === "/api/stage") {
+      if (request.method === "POST" && pathname === "/api/a2ui") {
         requireActiveMentor(request);
-        const stage = validateStage(await readBody(request));
+        const payload = plainCanvasPayload(await readBody(request));
         if (activeMentorSource === "work") {
-          sendJson(response, 202, { accepted: false, preservedWork: true, surfaceId: session.stage?.surfaceId || null });
+          sendJson(response, 202, { accepted: false, preservedWork: true, surfaceId: session.canvas?.activeSurfaceId || null });
           return;
         }
-        const nextStage = stage.focus === "chat" && !stage.components?.length && session.stage?.components?.length
-          ? { ...session.stage, ...stage, components: session.stage.components }
-          : stage;
-        session.stage = hydrateRunResults(nextStage, session.runResults);
+        session.canvas = payload.messages.length
+          ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
+          : { ...session.canvas, focus: payload.focus };
         await persist();
-        broadcast(agEvent("CUSTOM", { name: "a2ui", value: session.stage }));
+        broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
         setMentorState("idle");
-        sendJson(response, 202, { accepted: true, surfaceId: stage.surfaceId || null });
+        sendJson(response, 202, { accepted: true, surfaceId: session.canvas.activeSurfaceId || null });
         return;
       }
 
       if (request.method === "POST" && pathname === "/api/action") {
         const action = await readBody(request);
-        if (updateStageFromAction(session.stage, action)) {
+        if (updateCanvasFromAction(session.canvas, action)) {
           await persist();
-          broadcast(agEvent("CUSTOM", { name: "a2ui", value: session.stage }));
+          broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
         }
         if (action.action === "code_change") {
           sendJson(response, 202, { accepted: true, persisted: true });
@@ -487,16 +512,16 @@ export async function createLearnAnythingServer({
 
       if (request.method === "POST" && pathname === "/api/run") {
         const body = await readBody(request);
-        const component = runnableComponent(session.stage, body.componentId);
+        const component = runnableComponent(session.canvas, body.componentId);
         const language = component?.language || body.language;
         const runner = component?.run?.runner || language;
         const setup = component?.run?.setup || "";
-        const resultKey = runResultKey(session.stage, body.componentId);
+        const resultKey = runResultKey(session.canvas, body.componentId);
         if (!language || typeof language !== "string") throw httpError("A learner-facing language is required.", 400);
         if (component && component.runnable === false) throw httpError("This activity is not runnable.", 400);
-        if (updateEditorValue(session.stage, body.componentId, body.code)) {
+        if (updateEditorValue(session.canvas, body.componentId, body.code)) {
           await persist();
-          broadcast(agEvent("CUSTOM", { name: "a2ui", value: session.stage }));
+          broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
         }
         const toolCallId = randomUUID();
         const runId = randomUUID();
@@ -525,10 +550,10 @@ export async function createLearnAnythingServer({
           broadcast(agEvent("RUN_FINISHED", { threadId: session.slug, runId, outcome: { type: "success" } }));
           if (resultKey) {
             session.runResults = { ...(session.runResults || {}), [resultKey]: result };
-            const activeComponent = resultKey === runResultKey(session.stage, body.componentId) ? runnableComponent(session.stage, body.componentId) : null;
+            const activeComponent = resultKey === runResultKey(session.canvas, body.componentId) ? runnableComponent(session.canvas, body.componentId) : null;
             if (activeComponent) activeComponent.lastResult = result;
             await persist();
-            broadcast(agEvent("CUSTOM", { name: "a2ui", value: session.stage }));
+            broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
           }
           enqueueMentor({
             type: "execution_result",
@@ -543,10 +568,10 @@ export async function createLearnAnythingServer({
           const failedResult = { error: error.message };
           if (resultKey) {
             session.runResults = { ...(session.runResults || {}), [resultKey]: failedResult };
-            const activeComponent = resultKey === runResultKey(session.stage, body.componentId) ? runnableComponent(session.stage, body.componentId) : null;
+            const activeComponent = resultKey === runResultKey(session.canvas, body.componentId) ? runnableComponent(session.canvas, body.componentId) : null;
             if (activeComponent) activeComponent.lastResult = failedResult;
             await persist();
-            broadcast(agEvent("CUSTOM", { name: "a2ui", value: session.stage }));
+            broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
           }
           broadcast(agEvent("RUN_ERROR", { message: error.message, code: "EXECUTION_ERROR" }));
           enqueueMentor({
@@ -578,6 +603,7 @@ export async function createLearnAnythingServer({
     server,
     sessionDir: resolvedSessionDir,
     accessToken,
+    waitForMentor,
     async listen() {
       await new Promise((resolvePromise, reject) => {
         server.once("error", reject);
@@ -592,6 +618,8 @@ export async function createLearnAnythingServer({
       for (const client of clients) client.end();
       clients.clear();
       for (const waiter of [...mentorWaiters]) waiter.finish(null);
+      for (const finish of [...mentorReadyWaiters]) finish(null);
+      mentorReadyWaiters.clear();
       await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
     },
   };

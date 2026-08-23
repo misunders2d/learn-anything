@@ -1,39 +1,55 @@
-# Dynamic stage catalog
+# A2UI learning canvas catalog
 
-Post versioned JSON:
+Post a flow focus plus A2UI v0.9 messages:
 
 ```json
 {
-  "version": "learn-anything/v1",
-  "surfaceId": "lesson",
-  "focus": "chat",
-  "title": "Ownership checkpoint",
-  "components": []
+  "focus": "work",
+  "messages": [
+    {
+      "version": "v0.9",
+      "createSurface": {
+        "surfaceId": "lesson",
+        "catalogId": "urn:learn-anything:catalog:v1"
+      }
+    },
+    {
+      "version": "v0.9",
+      "updateComponents": {
+        "surfaceId": "lesson",
+        "components": [
+          { "id": "root", "component": "Column", "children": ["intro"] },
+          { "id": "intro", "component": "Markdown", "content": "One clear explanation" }
+        ]
+      }
+    },
+    {
+      "version": "v0.9",
+      "updateDataModel": {
+        "surfaceId": "lesson",
+        "path": "/",
+        "value": { "title": "Ownership checkpoint" }
+      }
+    }
+  ]
 }
 ```
 
-`focus` controls the whole browser workspace:
+`focus` controls the browser flow: `chat` shows the conversation; `work` shows the active A2UI surface. The mentor owns transitions. The browser-owned compact question composer and **Ask mentor** rescue control remain outside agent-rendered content.
 
-- `chat`: conversation is the primary activity for explanation, questions, alignment, or debrief.
-- `work`: the interactive stage is the primary activity for coding, diagrams, quizzes, checklists, or another concrete task.
+Every surface uses a flat adjacency list. The root component has id `root`; `Column` and `Row` reference child ids. Sending an existing component id updates it. `updateDataModel` values can be referenced with `{ "path": "/field" }`.
 
-Set `focus` on every stage update. The mentor owns transitions; never offer split view or learner-managed layout controls. If `focus` is missing, the browser falls back to `work` for runnable or interactive components and `chat` for explanatory content.
+Learning catalog components:
 
-The browser shell, not the stage payload, owns a compact question composer visible on every `work` surface. Agents must not recreate, hide, or replace it. Text/code selection or **Ask about this** adds `{componentId, label, quote?}` context to the learner message. A work clarification keeps the current surface mounted; its mentor reply carries the same or agent-selected component context and renders as an anchored note beside that component. **Ask mentor** remains the separate full-conversation rescue path.
+- `Markdown`: `{ "id": "copy", "component": "Markdown", "content": "..." }`
+- `Callout`: `{ "id": "hint", "component": "Callout", "tone": "info|success|warning", "title": "...", "content": "..." }`
+- `Code`: `{ "id": "editor", "component": "Code", "language": "python", "value": "...", "runnable": true, "run": { "runner": "python", "setup": "optional hidden fixture" } }`
+- `Table`: `{ "id": "rows", "component": "Table", "caption": "...", "columns": ["..."], "rows": [["..."]] }`
+- `Passage`: `{ "id": "passage", "component": "Passage", "text": "...", "source": "...", "annotations": [{ "quote": "...", "note": "..." }] }`
+- `Figure`: `{ "id": "figure", "component": "Figure", "mermaid": "flowchart LR ...", "caption": "...", "callouts": [{ "label": "..." }] }`
+- `Params`: `{ "id": "params", "component": "Params", "title": "...", "controls": [{ "id": "phase", "label": "Phase", "min": 0, "max": 6.28, "step": 0.01, "value": 0 }] }`
+- `Mermaid`: `{ "id": "diagram", "component": "Mermaid", "source": "flowchart LR ..." }`
+- `Quiz`: `{ "id": "quiz", "component": "Quiz", "question": "...", "options": [{ "id": "a", "label": "..." }] }`
+- `Checklist`: `{ "id": "list", "component": "Checklist", "items": [{ "id": "x", "label": "...", "done": false }] }`
 
-Supported component types:
-
-- `markdown`: `{ "type": "markdown", "content": "..." }`
-- `callout`: `{ "type": "callout", "tone": "info|success|warning", "title": "...", "content": "..." }`
-- `code`: `{ "type": "code", "language": "sql|javascript|python|rust|c|any display syntax", "value": "learner-facing artifact only", "runnable": true, "run": { "runner": "sqlite|javascript|python|rust|c", "setup": "optional hidden fixture" } }`
-- `table`: `{ "type": "table", "caption": "books", "columns": ["title", "author"], "rows": [["Kindred", "Octavia Butler"]] }`
-- `passage`: `{ "type": "passage", "text": "...", "source": "...", "annotations": [{ "quote": "...", "note": "..." }] }`
-- `figure`: `{ "type": "figure", "mermaid": "flowchart LR ...", "caption": "...", "callouts": [{ "label": "..." }] }`
-- `params`: `{ "type": "params", "title": "...", "controls": [{ "id": "phase", "label": "Phase", "min": 0, "max": 6.28, "step": 0.01, "value": 0 }] }`
-- `mermaid`: `{ "type": "mermaid", "source": "flowchart LR ..." }`
-- `quiz`: `{ "type": "quiz", "question": "...", "options": [{ "id": "a", "label": "..." }] }`
-- `checklist`: `{ "type": "checklist", "items": [{ "id": "x", "label": "...", "done": false }] }`
-
-Unknown components render as inspectable JSON instead of breaking surface. This catalog can wrap or map A2UI payloads while protocol evolves.
-
-`language` is presentation, not execution. `run.runner` selects a known prefab backend. `run.setup` never renders in the learner's editor. If `run` is absent, the artifact remains editable but non-runnable. Keep setup code and host-language wrappers out of `value`.
+Unknown components render as inspectable JSON instead of crashing the surface. `language` controls presentation; `run.runner` selects a fixed backend. Hidden setup and wrapper code never appear in the learner artifact.

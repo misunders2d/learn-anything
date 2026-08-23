@@ -98,10 +98,10 @@ Browser (React + A2UI renderer + persistent code editor)
 1. The invoking agent starts the selected server block, spawns the mentor in streaming input mode, and opens the browser.
 2. Learner types or speaks → HTTP POST to server → server yields one user message into the mentor's live input generator. **The session never restarts; context stays intact.**
 3. Mentor emits partial text deltas → server maps them to AG-UI `TEXT_MESSAGE_CONTENT` → SSE → browser paints tokens live.
-4. Mentor calls the `render_stage(a2ui_json)` MCP tool → server wraps the A2UI payload in an AG-UI `CUSTOM` event → renderer moves the browser into the requested flow state and renders the stage.
+4. Mentor calls the `render_canvas(focus, a2ui_messages)` MCP tool → server validates and persists A2UI v0.9 messages → AG-UI `CUSTOM` event → renderer updates the active surface and flow state.
 5. Mentor runs code in the sandbox → tool-use / tool-result events → AG-UI `TOOL_CALL_START` / `TOOL_CALL_RESULT` → browser streams the console panel live.
 6. Learner presses Stop mid-answer → `interrupt()`. Only available in streaming mode.
-7. Server continuously persists chat, stage state, journal, and notes to the learning directory.
+7. Server continuously persists chat, reduced A2UI canvas state, journal, and notes to the learning directory.
 
 ### 4.3 Initial reference adapter (Claude Code)
 

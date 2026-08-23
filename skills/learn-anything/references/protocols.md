@@ -8,8 +8,8 @@ Primary reference: https://docs.ag-ui.com/concepts/events
 
 ## A2UI
 
-A2UI is currently evolving. Treat stage payload as opaque versioned JSON at transport boundary. Renderer supports kit catalog plus raw-payload fallback. Do not make construction depend on one preview message shape.
+The work canvas uses the stable A2UI v0.9 protocol family. Each JSON message has `"version": "v0.9"` and exactly one of `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface`. Components form a flat adjacency list rooted at id `root`; the trusted browser catalog maps declarative component names to local React implementations.
 
-Primary reference: https://github.com/google/A2UI
+Primary reference: https://github.com/a2ui-project/a2ui
 
-AG-UI and A2UI are preferred, not mandatory. Any alternative must preserve dynamic browser stage, learner actions, execution visibility, persistence, and explicit degradation reporting.
+AG-UI transports mentor lifecycle, text, tool, state, and custom A2UI events. Reduced profiles must preserve a dynamic browser canvas, learner actions, execution visibility, persistence, and explicit degradation reporting.

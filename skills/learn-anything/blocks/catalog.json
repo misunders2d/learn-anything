@@ -6,15 +6,15 @@
       "kind": "server",
       "path": "blocks/server/server.mjs",
       "requires": ["node>=20"],
-      "provides": ["http-server", "sse-events", "message-queue", "state-persistence", "stage-api"],
+      "provides": ["http-server", "sse-events", "message-queue", "state-persistence", "a2ui-api"],
       "smokeCheck": "node bin/learn-anything.mjs smoke --session <session-dir>"
     },
     {
-      "id": "web.dynamic-stage",
+      "id": "web.a2ui-canvas",
       "kind": "frontend",
       "path": "blocks/web/dist",
       "requires": ["built-web-assets"],
-      "provides": ["mentor-stream", "dynamic-stage", "subject-editor", "structured-table", "annotated-passage", "figure", "parameter-controls", "quiz-actions", "diagram-rendering"],
+      "provides": ["mentor-stream", "a2ui-v0.9-canvas", "subject-editor", "structured-table", "annotated-passage", "figure", "parameter-controls", "quiz-actions", "diagram-rendering"],
       "smokeCheck": "GET / and GET /app.js return 200"
     },
     {
@@ -22,7 +22,7 @@
       "kind": "mentor-adapter",
       "path": "blocks/adapters/claude-agent-sdk/adapter.mjs",
       "requires": ["claude-agent-sdk-auth", "node>=20"],
-      "provides": ["persistent-mentor", "token-streaming", "session-resume", "stage-tool", "milestone-tool"],
+      "provides": ["persistent-mentor", "token-streaming", "session-resume", "canvas-tool", "milestone-tool"],
       "smokeCheck": "event mapper tests plus authenticated launch check"
     },
     {
@@ -30,7 +30,7 @@
       "kind": "mentor-adapter",
       "path": "scripts/mentor.mjs",
       "requires": ["shell", "node>=20"],
-      "provides": ["browser-to-agent-messages", "agent-to-browser-events", "stage-updates"],
+      "provides": ["browser-to-agent-messages", "agent-to-browser-events", "canvas-updates"],
       "degraded": ["no-token-streaming-guarantee", "agent-turn-long-poll"],
       "smokeCheck": "message round trip through /api/mentor/next and /api/mentor/event"
     },
@@ -39,7 +39,7 @@
       "kind": "mentor-adapter",
       "path": "blocks/adapters/codex-cli/adapter.mjs",
       "requires": ["codex-cli-auth", "node>=20"],
-      "provides": ["persistent-mentor", "session-resume", "stage-updates"],
+      "provides": ["persistent-mentor", "session-resume", "canvas-updates"],
       "degraded": ["turn-complete-output"],
       "smokeCheck": "real browser message reaches codex exec and returns mentor text"
     },

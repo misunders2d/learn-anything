@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createLearnAnythingServer } from "../blocks/server/server.mjs";
 import { updateValidation } from "./construct.mjs";
+import { canvasEventValue, canvasFromStage } from "../blocks/a2ui/state.mjs";
 
 async function jsonFetch(url, options = {}, { token, mentorId } = {}) {
   const response = await fetch(url, {
@@ -84,8 +85,8 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
     if (competingResponse.status !== 409) throw new Error("Competing mentor was not rejected.");
 
     for (const [path, body] of [
-      ["/api/stage", { focus: "work", components: [null] }],
-      ["/api/mentor/event", { type: "CUSTOM", name: "a2ui", value: { focus: "work", components: [null] } }],
+      ["/api/a2ui", { focus: "work", messages: [null] }],
+      ["/api/mentor/event", { type: "CUSTOM", name: "a2ui", value: { focus: "work", messages: [null] } }],
     ]) {
       const malformed = await fetch(`${address.url}${path}`, {
         method: "POST",
@@ -96,7 +97,7 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
         },
         body: JSON.stringify(body),
       });
-      if (malformed.status !== 400) throw new Error(`${path} accepted a malformed stage.`);
+      if (malformed.status !== 400) throw new Error(`${path} accepted malformed A2UI.`);
     }
 
     const messageId = "smoke-assistant";
@@ -121,7 +122,7 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
         { id: "smoke-draft", type: "code", language: "javascript", value: "", runnable: false },
       ],
     };
-    await jsonFetch(`${address.url}/api/stage`, { method: "POST", body: JSON.stringify(stage) }, mentorAuth);
+    await jsonFetch(`${address.url}/api/a2ui`, { method: "POST", body: JSON.stringify(canvasEventValue(canvasFromStage(stage, stage.title))) }, mentorAuth);
 
     await jsonFetch(`${address.url}/api/action`, {
       method: "POST",
@@ -155,11 +156,12 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
 
     const persisted = JSON.parse(await readFile(join(isolatedSession, "session.json"), "utf8"));
     if (!persisted.transcript.some((message) => message.content === "smoke-reply")) throw new Error("Mentor reply did not persist.");
-    if (persisted.stage?.surfaceId !== "smoke") throw new Error("Stage did not persist.");
-    if (persisted.stage?.focus !== "work") throw new Error("Flow-driven workspace focus did not persist.");
-    if (!persisted.stage.components.find((component) => component.id === "smoke-list").items[0].done) throw new Error("Stage action did not persist.");
-    if (!persisted.stage.components.find((component) => component.id === "smoke-code").value.includes("smoke-exec")) throw new Error("Editor state did not persist.");
-    if (!persisted.stage.components.find((component) => component.id === "smoke-draft").value.includes("unsaved")) throw new Error("Unexecuted editor state did not persist.");
+    const smokeSurface = persisted.canvas?.surfaces?.smoke;
+    if (!smokeSurface) throw new Error("A2UI canvas did not persist.");
+    if (persisted.canvas?.focus !== "work") throw new Error("Flow-driven workspace focus did not persist.");
+    if (!smokeSurface.components["smoke-list"].items[0].done) throw new Error("Canvas action did not persist.");
+    if (!smokeSurface.components["smoke-code"].value.includes("smoke-exec")) throw new Error("Editor state did not persist.");
+    if (!smokeSurface.components["smoke-draft"].value.includes("unsaved")) throw new Error("Unexecuted editor state did not persist.");
     const runDirectories = (await readdir(join(isolatedSession, "exercises"))).filter((name) => name.startsWith("run-"));
     if (runDirectories.length !== 3) throw new Error("Executions did not use isolated run directories.");
 
@@ -194,7 +196,7 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
       status: "passed",
       checkedAt: new Date().toISOString(),
       scope: "isolated-protocol-and-execution-plus-real-workspace-write",
-      checks: ["health", "browser-assets", "browser-rescue", "code-editor", "api-auth", "origin-defense", "content-type-defense", "mentor-lease", "malformed-stage-rejection", "message-queue", "learner-message-priority", "mentor-events", "dynamic-stage", "agent-driven-focus", "adaptive-actions", "editor-persistence", "execution-feedback", "isolated-run-directory", "serialized-execution", "real-workspace-write", "persistence", "javascript-runner"],
+      checks: ["health", "browser-assets", "browser-rescue", "code-editor", "api-auth", "origin-defense", "content-type-defense", "mentor-lease", "malformed-a2ui-rejection", "message-queue", "learner-message-priority", "mentor-events", "a2ui-canvas", "agent-driven-focus", "adaptive-actions", "editor-persistence", "execution-feedback", "isolated-run-directory", "serialized-execution", "real-workspace-write", "persistence", "javascript-runner"],
     };
     await updateValidation(sourceSession, validation);
     return { ok: true, url: address.url, validation };

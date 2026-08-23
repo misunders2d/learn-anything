@@ -39,7 +39,7 @@ async function mentorPost(url, path, token, mentorId, value) {
 
 function mentorPrompt(topic, item) {
   const learnerInput = item.type === "user_message" && item.message?.source === "work"
-    ? `Learner asks an inline clarification from the current work surface. Answer without replacing or leaving the current activity.\nQuestion: ${item.message.content}\nCurrent stage: ${JSON.stringify(item.stageContext, null, 2)}`
+    ? `Learner asks an inline clarification from the current work canvas. Answer without replacing or leaving the current activity.\nQuestion: ${item.message.content}\nCurrent A2UI canvas: ${JSON.stringify(item.canvasContext, null, 2)}`
     : item.type === "user_message"
       ? item.message.content
     : JSON.stringify(item, null, 2);
@@ -51,23 +51,26 @@ Browser events are your observation of the learner. React automatically to submi
 
 Match medium to subject. For humanities and conceptual science, start with one concrete anchor, a short explanation, and a meaningful learner question; do not dump a field survey, force code, or open a stage merely to use it. For a humanities beginner, keep the first turn to that anchor, why it matters, and one choice or question—do not list periods, authors, or genres unless the learner asks. Use a passage, comparison, timeline, diagram, or thought experiment only when it advances the current idea. For demonstrated technical experts, skip basic ceremony and move to a realistic example or failure mode.
 
-The browser has one primary mode. Use focus "chat" for explanation, questions, and debrief. Use focus "work" only after your message has prepared one clear interactive activity. An inline clarification from a work surface is different: answer concisely with focus "work" and stage_json null so the current editor, task, and output remain visible. When creating or replacing work, stage_json must be a JSON string containing a stage object with supported components: markdown, callout, code, table, passage, figure, params, mermaid, quiz, checklist. When focus is chat, stage_json should normally be null.
+The browser has one primary mode. Use focus "chat" for explanation, questions, and debrief. Use focus "work" only after your message has prepared one clear interactive activity. An inline clarification from a work canvas is different: answer concisely with focus "work" and a2ui_jsonl null so the current editor, task, and output remain visible.
 
-Keep implementation scaffolding backstage. The learner must see and edit the subject's own artifact, never a wrapper chosen only because a host runner exists. A SQL lesson shows pure SQL, not Python sqlite3 setup. Put hidden fixtures in code.run.setup and choose the backend with code.run.runner. If no suitable runner exists, make the artifact non-runnable instead of wrapping it in another language. Prefer structured subject feedback: tables for SQL, targeted diagnostics for code, annotated passages for literature, and figures or parameters for visual concepts.
+When creating or updating work, a2ui_jsonl must contain newline-delimited A2UI v0.9 JSON messages. Use the exact protocol envelope with one message type per line:
+{"version":"v0.9","createSurface":{"surfaceId":"lesson","catalogId":"urn:learn-anything:catalog:v1"}}
+{"version":"v0.9","updateComponents":{"surfaceId":"lesson","components":[{"id":"root","component":"Column","children":["intro"]},{"id":"intro","component":"Markdown","content":"A clear explanation"}]}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"lesson","path":"/","value":{"title":"A learner-facing title"}}}
 
-You may anchor a work-surface answer to the relevant component with target_component_id and optionally target_quote. For inline clarification, normally reuse the learner's component context. For execution feedback, target the executed code component. Otherwise return null for both fields.
+The root component must be a Column or Row and reference children by id. Supported learning-catalog component names are Markdown, Callout, Code, Table, Passage, Figure, Params, Mermaid, Quiz, and Checklist. Their properties are:
+- Markdown: {"id":"...","component":"Markdown","content":"..."}
+- Callout: {"id":"...","component":"Callout","tone":"info|success|warning","title":"...","content":"..."}
+- Code: {"id":"...","component":"Code","language":"any learner-facing syntax such as sql|python|rust|latex","value":"only the learner-facing artifact","runnable":true,"run":{"runner":"javascript|python|rust|c|sqlite","setup":"optional hidden fixture"}}
+- Table: {"id":"...","component":"Table","caption":"...","columns":["..."],"rows":[["..."]]}
+- Passage: {"id":"...","component":"Passage","text":"...","source":"...","annotations":[{"quote":"...","note":"..."}]}
+- Figure: {"id":"...","component":"Figure","mermaid":"flowchart LR ...","caption":"...","callouts":[{"label":"..."}]}
+- Params: {"id":"...","component":"Params","title":"...","controls":[{"id":"x","label":"...","min":0,"max":10,"step":1,"value":5}]}
+- Mermaid: {"id":"...","component":"Mermaid","source":"flowchart LR ..."}
+- Quiz: {"id":"...","component":"Quiz","question":"...","options":[{"id":"a","label":"..."}]}
+- Checklist: {"id":"...","component":"Checklist","items":[{"id":"x","label":"...","done":false}]}
 
-Use these exact component fields:
-- markdown: {"id":"...","type":"markdown","content":"..."}
-- callout: {"id":"...","type":"callout","tone":"info|success|warning","title":"...","content":"..."}
-- code: {"id":"...","type":"code","language":"any learner-facing syntax such as sql|python|rust|latex","value":"only the learner-facing artifact","runnable":true,"run":{"runner":"javascript|python|rust|c|sqlite","setup":"optional hidden fixture"}}
-- table: {"id":"...","type":"table","caption":"...","columns":["..."],"rows":[["..."]]}
-- passage: {"id":"...","type":"passage","text":"...","source":"...","annotations":[{"quote":"...","note":"..."}]}
-- figure: {"id":"...","type":"figure","mermaid":"flowchart LR ...","caption":"...","callouts":[{"label":"..."}]}
-- params: {"id":"...","type":"params","title":"...","controls":[{"id":"x","label":"...","min":0,"max":10,"step":1,"value":5}]}
-- mermaid: {"id":"...","type":"mermaid","source":"flowchart LR ..."}
-- quiz: {"id":"...","type":"quiz","question":"...","options":[{"id":"a","label":"..."}]}
-- checklist: {"id":"...","type":"checklist","items":[{"id":"x","label":"...","done":false}]}
+Keep implementation scaffolding backstage. The learner must see and edit the subject's own artifact, never a wrapper chosen only because a host runner exists. Put hidden fixtures in Code.run.setup. Prefer structured subject feedback beside its cause.
 `;
   return `${foundation}
 Respond to this browser event:
@@ -137,63 +140,27 @@ async function sendText(url, token, mentorId, text, metadata = {}) {
   await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "TEXT_MESSAGE_END", messageId });
 }
 
-async function normalizeStage(url, token, response) {
+async function normalizeCanvasPayload(url, token, response) {
   const current = await requestJson(url, "/api/session", token);
-  let stage;
-  if (response.stage_json) {
-    stage = JSON.parse(response.stage_json);
-    if (!stage || typeof stage !== "object" || Array.isArray(stage)) throw new Error("stage_json must encode an object.");
-  } else if (response.focus === "work" && current.stage?.components) {
-    stage = current.stage;
-  } else if (response.focus === "work") {
-    throw new Error("Codex selected work focus without an existing or replacement stage.");
-  } else {
-    stage = current.stage?.components ? current.stage : { components: [] };
+  let messages = [];
+  if (response.a2ui_jsonl) {
+    if (typeof response.a2ui_jsonl !== "string") throw new Error("a2ui_jsonl must be a string or null.");
+    messages = response.a2ui_jsonl
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line, index) => {
+        try {
+          return JSON.parse(line);
+        } catch (error) {
+          throw new Error(`a2ui_jsonl line ${index + 1} is invalid JSON: ${error.message}`);
+        }
+      });
   }
-  if (!Array.isArray(stage.components)) throw new Error("stage_json components must be an array.");
-  const components = stage.components.map((component, index) => {
-    if (!component || typeof component !== "object" || Array.isArray(component) || typeof component.type !== "string") {
-      throw new Error(`Stage component ${index + 1} is invalid.`);
-    }
-    const id = typeof component.id === "string" && component.id ? component.id : `${component.type}-${index + 1}`;
-    if (component.type === "code") {
-      const value = typeof component.value === "string" ? component.value : component.content;
-      if (typeof value !== "string") throw new Error(`Code component ${id} needs string value.`);
-      if (typeof component.language !== "string" || !component.language.trim()) throw new Error(`Code component ${id} needs a learner-facing language.`);
-      const legacyRunner = ["javascript", "python", "rust", "c"].includes(component.language) ? component.language : null;
-      const run = component.run || (legacyRunner && component.runnable !== false ? { runner: legacyRunner } : null);
-      if (run && !["javascript", "python", "rust", "c", "sqlite"].includes(run.runner)) throw new Error(`Code component ${id} has unsupported runner.`);
-      if (run?.setup !== undefined && typeof run.setup !== "string") throw new Error(`Code component ${id} runner setup must be a string.`);
-      return { ...component, id, value, ...(run ? { run } : {}), runnable: Boolean(run) && component.runnable !== false };
-    }
-    if (component.type === "checklist") {
-      if (!Array.isArray(component.items)) throw new Error(`Checklist component ${id} needs items.`);
-      return {
-        ...component,
-        id,
-        items: component.items.map((item, itemIndex) => typeof item === "string"
-          ? { id: `${id}-${itemIndex + 1}`, label: item, done: false }
-          : { ...item, id: item?.id || `${id}-${itemIndex + 1}`, done: Boolean(item?.done) }),
-      };
-    }
-    if (component.type === "quiz") {
-      if (!Array.isArray(component.options)) throw new Error(`Quiz component ${id} needs options.`);
-      return {
-        ...component,
-        id,
-        options: component.options.map((item, itemIndex) => ({ ...item, id: item?.id || `${id}-${itemIndex + 1}` })),
-      };
-    }
-    return { ...component, id };
-  });
-  return {
-    ...stage,
-    version: stage.version || "learn-anything/v1",
-    surfaceId: stage.surfaceId || `${response.focus}-${randomUUID()}`,
-    focus: response.focus,
-    title: response.title || current.stage?.title || current.topic,
-    components,
-  };
+  if (response.focus === "work" && messages.length === 0 && !current.canvas?.activeSurfaceId) {
+    throw new Error("Codex selected work focus without an existing or replacement A2UI surface.");
+  }
+  return { focus: response.focus, messages };
 }
 
 const args = process.argv.slice(2);
@@ -249,16 +216,16 @@ while (!stopping) {
       });
       continue;
     }
-    const stage = await normalizeStage(url, token, result.response);
+    const canvasPayload = await normalizeCanvasPayload(url, token, result.response);
     const learnerContext = item.type === "user_message" && item.message?.source === "work" ? item.message.context : null;
     const executionContext = item.type === "execution_result" && item.componentId ? { componentId: item.componentId, label: `${item.language || "code"} code` } : null;
     const responseContext = result.response.target_component_id
       ? { componentId: result.response.target_component_id, ...(result.response.target_quote ? { quote: result.response.target_quote } : {}) }
       : learnerContext || executionContext;
     const responseMetadata = responseContext ? { source: "work", context: responseContext } : {};
-    if (result.response.focus === "chat") await mentorPost(url, "/api/stage", token, mentorId, stage);
+    if (result.response.focus === "chat") await mentorPost(url, "/api/a2ui", token, mentorId, canvasPayload);
     await sendText(url, token, mentorId, result.response.message, responseMetadata);
-    if (result.response.focus === "work") await mentorPost(url, "/api/stage", token, mentorId, stage);
+    if (result.response.focus === "work") await mentorPost(url, "/api/a2ui", token, mentorId, canvasPayload);
     await mentorPost(url, "/api/mentor/event", token, mentorId, {
       type: "RUN_FINISHED",
       threadId: session.slug,

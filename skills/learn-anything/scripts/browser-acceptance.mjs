@@ -6,6 +6,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { constructSession, kitRoot } from "./construct.mjs";
 import { createLearnAnythingServer } from "../blocks/server/server.mjs";
+import { canvasEventValue, canvasFromStage } from "../blocks/a2ui/state.mjs";
 
 const checks = [];
 const record = (name) => checks.push(name);
@@ -56,6 +57,16 @@ async function api(address, path, options = {}, mentorId = null) {
   const body = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) throw new Error(`${path}: ${response.status} ${JSON.stringify(body)}`);
   return body;
+}
+
+function renderCanvas(address, stage, mentorId) {
+  const payload = canvasEventValue(canvasFromStage(stage, stage.title || "Learning canvas"));
+  return api(address, "/api/a2ui", { method: "POST", body: JSON.stringify(payload) }, mentorId);
+}
+
+function sessionComponent(session, componentId) {
+  const surface = session.canvas?.surfaces?.[session.canvas.activeSurfaceId];
+  return surface?.components?.[componentId] || null;
 }
 
 class ChromeHarness {
@@ -257,10 +268,10 @@ try {
   browser = new ChromeHarness(await browserBinary(), profile, address.launchUrl);
   await browser.start();
   await waitFor(() => browser.evaluate("document.body.dataset.focus === 'chat'"), "initial chat focus");
-  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.status-dot.is-connected'))"), "initial workspace connection");
+  await waitFor(() => browser.evaluate("document.querySelector('.workspace-status')?.innerText.includes('Mentor unavailable')"), "initial workspace connection");
   await assertView(browser, "chat");
   record("initial-chat-visible");
-  assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('Replies after send')"));
+  assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('Mentor unavailable')"));
   assert.equal(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('mentor-output-may-arrive-per-turn')"), false);
   assert.equal(await browser.evaluate("Boolean(document.querySelector('.console-output'))"), false);
   record("learner-facing-capability-labels");
@@ -276,7 +287,7 @@ try {
   assert.equal(delivered.response.status, 200);
   assert.equal(delivered.body.message.content, firstRequest);
 
-  const rejectedStage = await fetch(`${address.url}/api/stage`, {
+  const rejectedCanvas = await fetch(`${address.url}/api/a2ui`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -284,11 +295,11 @@ try {
       "x-learn-anything-token": address.accessToken,
       "x-learn-anything-mentor": mentorId,
     },
-    body: JSON.stringify({ focus: "work", components: [null] }),
+    body: JSON.stringify({ focus: "work", messages: [null] }),
   });
-  assert.equal(rejectedStage.status, 400);
+  assert.equal(rejectedCanvas.status, 400);
   await assertView(browser, "chat");
-  record("malformed-stage-rejected-with-workspace-intact");
+  record("malformed-a2ui-rejected-with-workspace-intact");
 
   const replyId = "browser-round-trip-reply";
   await api(address, "/api/mentor/event", {
@@ -317,7 +328,7 @@ try {
     title: "Explanation",
     components: [{ id: "explanation-copy", type: "markdown", content: "One clear explanation" }],
   };
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify(explanatory) }, mentorId);
+  await renderCanvas(address, explanatory, mentorId);
   await assertView(browser, "chat");
   record("missing-focus-explanation-falls-back-to-chat");
 
@@ -332,14 +343,22 @@ try {
       { id: "browser-code", type: "code", language: "javascript", runnable: true, value: "console.log('initial');" },
     ],
   };
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify(workStage) }, mentorId);
+  await renderCanvas(address, workStage, mentorId);
   await assertView(browser, "work");
   const editorKind = await waitForEditor(browser);
   assert.equal(await browser.evaluate("Boolean(document.querySelector('.console-output'))"), false);
-  assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('Runs here')"));
+  assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('Local runner')"));
   assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.editor-shell')).opacity"), "1");
   record("agent-work-visible");
   record(`code-editor-${editorKind}`);
+
+  await setEditor(browser, "line\nnext");
+  await browser.evaluate("document.querySelector('.code-fallback').focus(); document.querySelector('.code-fallback').setSelectionRange(5, 5)");
+  await browser.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+  await browser.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 });
+  await waitFor(() => browser.evaluate(`(${editorValueExpression()}) === "line\\n    next"`), "Tab indentation in code editor");
+  assert.equal(await browser.evaluate("document.activeElement === document.querySelector('.code-fallback')"), true);
+  record("tab-indents-and-keeps-editor-focus");
 
   const workQuestion = "Why does this example matter?";
   const workQuestionPoll = fetch(`${address.url}/api/mentor/next?${new URLSearchParams({ token: address.accessToken, mentorId })}`)
@@ -362,14 +381,14 @@ try {
     { type: "RUN_FINISHED", threadId: "browser-acceptance", runId: "work-question", outcome: { type: "success" } },
   ]) await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify(event) }, mentorId);
   await assertView(browser, "work");
-  assert.ok(await browser.evaluate("document.querySelector('[data-component-id=\"browser-code\"] .anchored-mentor-note').innerText.includes('This note belongs to the code block')"));
+  await waitFor(() => browser.evaluate("document.querySelector('[data-component-id=\"browser-code\"] .anchored-mentor-note')?.innerText.includes('This note belongs to the code block') === true"), "component-anchored mentor reply");
   record("work-surface-context-question");
   record("component-anchored-mentor-reply");
 
   await setEditor(browser, code);
   await new Promise((resolve) => setTimeout(resolve, 650));
   const saved = await api(address, "/api/session");
-  assert.equal(saved.stage.components.find((component) => component.id === "browser-code").value, code);
+  assert.equal(sessionComponent(saved, "browser-code").value, code);
   record("editor-draft-persisted");
 
   await browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.textContent.trim() === 'Run').click()");
@@ -393,7 +412,7 @@ try {
       },
     ],
   };
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify(sqlStage) }, mentorId);
+  await renderCanvas(address, sqlStage, mentorId);
   await assertView(browser, "work");
   await waitForEditor(browser);
   assert.equal(await browser.evaluate(editorValueExpression()), "SELECT title FROM books ORDER BY title;");
@@ -415,7 +434,7 @@ try {
   assert.doesNotMatch(sqlErrorText, /Traceback|sql_runner|sqlite3\.|\/tmp\//i);
   record("sql-error-hides-runner-scaffolding");
 
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify({ ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }) }, mentorId);
+  await renderCanvas(address, { ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "work");
 
   await browser.evaluate("document.getElementById('mentor-rescue').click()");
@@ -442,15 +461,15 @@ try {
   await assertView(browser, "chat", { rescued: true });
   record("enter-submits-without-navigation");
 
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify({ ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }) }, mentorId);
+  await renderCanvas(address, { ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "chat", { rescued: true });
   record("same-surface-work-cannot-dismiss-rescue");
 
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify({ ...workStage, focus: "chat", components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }) }, mentorId);
+  await renderCanvas(address, { ...workStage, focus: "chat", components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "chat");
   record("explicit-chat-acknowledges-rescue");
 
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify({ ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }) }, mentorId);
+  await renderCanvas(address, { ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "work");
   assert.equal(await browser.evaluate(editorValueExpression()), code);
   assert.ok(await browser.evaluate("document.querySelector('.console-output').innerText.includes('browser-run-ok')"));
@@ -458,10 +477,7 @@ try {
 
   await browser.evaluate("document.getElementById('mentor-rescue').click()");
   await assertView(browser, "chat", { rescued: true });
-  await api(address, "/api/stage", {
-    method: "POST",
-    body: JSON.stringify({ ...workStage, surfaceId: "work-two", components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }),
-  }, mentorId);
+  await renderCanvas(address, { ...workStage, surfaceId: "work-two", components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "work");
   record("new-surface-releases-rescue");
 
@@ -484,13 +500,13 @@ try {
       },
     ],
   };
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify(interactiveStage) }, mentorId);
+  await renderCanvas(address, interactiveStage, mentorId);
   await assertView(browser, "work");
   await browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.textContent.trim() === 'Two').click()");
-  await waitFor(async () => (await api(address, "/api/session")).stage.components.find((component) => component.id === "browser-quiz").selectedOptionId === "two", "quiz persistence");
+  await waitFor(async () => sessionComponent((await api(address, "/api/session")), "browser-quiz").selectedOptionId === "two", "quiz persistence");
   await waitFor(() => browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.textContent.trim() === 'Two').className.includes('is-selected')"), "visible quiz selection");
   await browser.evaluate("document.querySelector('.stage-pane input[type=checkbox]').click()");
-  await waitFor(async () => (await api(address, "/api/session")).stage.components.find((component) => component.id === "browser-checklist").items[0].done, "checklist persistence");
+  await waitFor(async () => sessionComponent((await api(address, "/api/session")), "browser-checklist").items[0].done, "checklist persistence");
   await waitFor(() => browser.evaluate("document.querySelector('.stage-pane input[type=checkbox]').checked"), "visible checked state");
   record("quiz-choice-click-and-persistence");
   record("checklist-click-and-persistence");
@@ -522,7 +538,7 @@ try {
       },
     ],
   };
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify(subjectNativeStage) }, mentorId);
+  await renderCanvas(address, subjectNativeStage, mentorId);
   await assertView(browser, "work");
   assert.ok(await browser.evaluate("document.querySelector('.passage-surface').innerText.includes('sweet showers')"));
   await waitFor(() => browser.evaluate("Boolean(document.querySelector('.figure-surface svg'))"), "subject figure rendering", 12_000);
@@ -534,17 +550,14 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
   })()`);
-  await waitFor(async () => (await api(address, "/api/session")).stage.components.find((component) => component.id === "phase-control").controls[0].value === 0.75, "parameter persistence");
+  await waitFor(async () => sessionComponent((await api(address, "/api/session")), "phase-control").controls[0].value === 0.75, "parameter persistence");
   record("annotated-passage-visible");
   record("subject-figure-visible");
   record("parameter-control-interactive");
   record("non-code-subject-hides-code-console");
 
   for (const [index, focus] of ["chat", "work", "chat", "work"].entries()) {
-    await api(address, "/api/stage", {
-      method: "POST",
-      body: JSON.stringify({ ...workStage, surfaceId: `rapid-${index}`, focus, components: [{ ...workStage.components[1], value: code }] }),
-    }, mentorId);
+    await renderCanvas(address, { ...workStage, surfaceId: `rapid-${index}`, focus, components: [{ ...workStage.components[1], value: code }] }, mentorId);
   }
   await assertView(browser, "work");
   record("rapid-agent-transitions-land-on-final-state");
@@ -563,7 +576,7 @@ try {
     title: "Forward-compatible component",
     components: [{ id: "future", type: "future-widget", payload: { safe: true } }],
   };
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify(unknownStage) }, mentorId);
+  await renderCanvas(address, unknownStage, mentorId);
   await assertView(browser, "work");
   assert.ok(await browser.evaluate("document.querySelector('.stage-pane').innerText.includes('future-widget')"));
   record("unknown-component-contained");
@@ -575,15 +588,12 @@ try {
     title: "Bad diagram containment",
     components: [{ id: "bad-mermaid", type: "mermaid", source: "flowchart LR\nA[" }],
   };
-  await api(address, "/api/stage", { method: "POST", body: JSON.stringify(malformedDiagram) }, mentorId);
+  await renderCanvas(address, malformedDiagram, mentorId);
   await assertView(browser, "work");
   await waitFor(() => browser.evaluate("Boolean(document.querySelector('.stage-pane .activity-error'))"), "diagram error card");
   record("malformed-diagram-contained");
 
-  await api(address, "/api/stage", {
-    method: "POST",
-    body: JSON.stringify({ ...workStage, surfaceId: "resume", components: [{ ...workStage.components[1], value: code }] }),
-  }, mentorId);
+  await renderCanvas(address, { ...workStage, surfaceId: "resume", components: [{ ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "work");
   await browser.call("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("Boolean(document.querySelector('.workspace'))"), "workspace after refresh");
@@ -595,10 +605,7 @@ try {
   await browser.evaluate("document.getElementById('mentor-rescue').click()");
   await assertView(browser, "chat", { rescued: true });
   assert.ok(await browser.evaluate(`document.querySelector('.mentor-pane').innerText.includes(${JSON.stringify(enterMessage)})`));
-  await api(address, "/api/stage", {
-    method: "POST",
-    body: JSON.stringify({ ...workStage, surfaceId: "after-refresh", components: [{ ...workStage.components[1], value: code }] }),
-  }, mentorId);
+  await renderCanvas(address, { ...workStage, surfaceId: "after-refresh", components: [{ ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "work");
   record("refresh-restores-stage-and-persisted-transcript");
 

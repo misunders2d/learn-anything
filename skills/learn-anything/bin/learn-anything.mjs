@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { constructSession, kitRoot } from "../scripts/construct.mjs";
 import { probeCapabilities } from "../scripts/probe.mjs";
 import { smokeSession } from "../scripts/smoke.mjs";
+import { watchOwnerProcess } from "../scripts/process-lifecycle.mjs";
 import { createLearnAnythingServer } from "../blocks/server/server.mjs";
 
 function option(args, name, fallback = null) {
@@ -55,8 +56,17 @@ async function startMentor(sessionDir, url) {
   });
 }
 
+function mentorExit(child) {
+  return new Promise((resolvePromise, reject) => {
+    child.once("exit", (code, signal) => {
+      reject(new Error(`Mentor exited before attaching (${code ?? signal ?? "unknown"}).`));
+    });
+  });
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
+  const ownerPid = process.ppid;
   const json = has(args, "--json");
 
   if (command === "probe") {
@@ -90,20 +100,47 @@ async function main() {
     const requestedPort = Number(option(args, "--port", "0"));
     if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new Error("--port must be an integer from 0 through 65535.");
     const runtime = await createLearnAnythingServer({ sessionDir: resolve(sessionDir), kitRoot, host, port: requestedPort });
-    const address = await runtime.listen();
-    const mentor = has(args, "--no-mentor") ? null : await startMentor(sessionDir, address.url);
-    const capabilities = probeCapabilities();
-    const shouldOpen = has(args, "--open") && !has(args, "--no-open");
-    const opened = shouldOpen ? openBrowser(address.launchUrl, capabilities.browserOpener) : false;
-    output({ ...address, opened, mentorAttached: Boolean(mentor), sessionDir: resolve(sessionDir) }, json);
+    let mentor = null;
+    let clearOwnerWatch = () => {};
+    let cleanupPromise = null;
+    const cleanup = () => {
+      if (cleanupPromise) return cleanupPromise;
+      cleanupPromise = (async () => {
+        clearOwnerWatch();
+        if (mentor?.exitCode === null) mentor.kill("SIGTERM");
+        await runtime.close();
+      })();
+      return cleanupPromise;
+    };
     const stop = async () => {
-      mentor?.kill("SIGTERM");
-      await runtime.close();
+      await cleanup();
       process.exit(0);
     };
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
-    return;
+
+    try {
+      const address = await runtime.listen();
+      const noMentor = has(args, "--no-mentor");
+      mentor = noMentor ? null : await startMentor(sessionDir, address.url);
+      if (!noMentor && !mentor) {
+        throw new Error("Selected profile has no persistent mentor. Recreate with codex-cli or reference-streaming, or pass --no-mentor for explicit manual mode.");
+      }
+      if (mentor) {
+        await Promise.race([runtime.waitForMentor(15_000), mentorExit(mentor)]);
+        mentor.once("exit", () => void stop());
+      }
+      clearOwnerWatch = watchOwnerProcess({ ownerPid, onOwnerExit: stop });
+      const capabilities = probeCapabilities();
+      const shouldOpen = has(args, "--open") && !has(args, "--no-open");
+      const opened = shouldOpen ? openBrowser(address.launchUrl, capabilities.browserOpener) : false;
+      output({ ...address, opened, mentorAttached: Boolean(mentor), sessionDir: resolve(sessionDir) }, json);
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      process.once("SIGHUP", stop);
+      return;
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
   }
 
   process.stdout.write(`learn-anything constructor\n\nCommands:\n  probe [--json]\n  create <topic> [--root path|--general] [--profile portable-shell|reference-streaming|codex-cli] [--json]\n  start --session path [--host 127.0.0.1] [--port 0] [--open|--no-open] [--no-mentor] [--json]\n  smoke --session path [--json]\n`);

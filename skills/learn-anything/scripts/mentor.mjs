@@ -64,10 +64,10 @@ if (command === "next") {
   await post(url, "/api/mentor/event", { type: "TEXT_MESSAGE_END", messageId }, token, mentorId);
   await post(url, "/api/mentor/event", { type: "RUN_FINISHED", threadId: "browser", runId, outcome: { type: "success" } }, token, mentorId);
   process.stdout.write(`${JSON.stringify({ accepted: true, messageId })}\n`);
-} else if (command === "stage") {
+} else if (command === "canvas") {
   const raw = await loadValue(args, "--json");
-  const stage = JSON.parse(raw);
-  const result = await post(url, "/api/stage", stage, token, mentorId);
+  const payload = JSON.parse(raw);
+  const result = await post(url, "/api/a2ui", payload, token, mentorId);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } else if (command === "event") {
   const raw = await loadValue(args, "--json");
@@ -75,5 +75,5 @@ if (command === "next") {
   const result = await post(url, "/api/mentor/event", event, token, mentorId);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } else {
-  throw new Error("Usage: mentor.mjs <next|text|stage|event> --url <server-url> --token <token> --mentor-id <id> [--takeover] [--file path|--text value|--json value]");
+  throw new Error("Usage: mentor.mjs <next|text|canvas|event> --url <server-url> --token <token> --mentor-id <id> [--takeover] [--file path|--text value|--json value]");
 }

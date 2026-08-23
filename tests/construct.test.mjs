@@ -22,10 +22,18 @@ test("probe reports constructor-relevant capabilities", () => {
   assert.ok(Array.isArray(result.warnings));
 });
 
+test("probe identifies OMP before compatibility environment markers", () => {
+  const result = probeCapabilities({
+    env: { OMPCODE: "1", CLAUDECODE: "1" },
+    platform: process.platform,
+  });
+  assert.equal(result.harness, "omp");
+});
+
 test("construct creates and resumes without replacing session state", async () => {
   const root = await mkdtemp(join(tmpdir(), "learn-anything-construct-"));
   try {
-    const first = await constructSession({ topic: "Rust lifetimes", root, env: {} });
+    const first = await constructSession({ topic: "Rust lifetimes", root, env: {}, profile: "portable-shell" });
     assert.equal(first.resumed, false);
     assert.equal(first.profile, "portable-shell");
     const initial = JSON.parse(await readFile(first.sessionPath, "utf8"));
@@ -34,7 +42,7 @@ test("construct creates and resumes without replacing session state", async () =
     assert.equal(initial.assembly.validation.status, "pending");
     assert.match(initial.security.accessToken, /^[A-Za-z0-9_-]{40,}$/);
 
-    const second = await constructSession({ topic: "Rust lifetimes", root, env: {} });
+    const second = await constructSession({ topic: "Rust lifetimes", root, env: {}, profile: "portable-shell" });
     assert.equal(second.resumed, true);
     const resumed = JSON.parse(await readFile(second.sessionPath, "utf8"));
     assert.equal(resumed.createdAt, initial.createdAt);
@@ -64,6 +72,22 @@ test("auto profile selects the bundled Codex CLI adapter in Codex", async () => 
     const session = JSON.parse(await readFile(result.sessionPath, "utf8"));
     assert.ok(session.assembly.blocks.includes("adapter.codex-cli"));
     assert.ok(session.assembly.degraded.includes("mentor-output-arrives-after-headless-turn"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("auto profile selects the persistent Codex adapter in OMP", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-omp-profile-"));
+  try {
+    const result = await constructSession({
+      topic: "Python",
+      root,
+      env: { OMPCODE: "1", CLAUDECODE: "1" },
+    });
+    assert.equal(result.profile, "codex-cli");
+    const session = JSON.parse(await readFile(result.sessionPath, "utf8"));
+    assert.ok(session.assembly.blocks.includes("adapter.codex-cli"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

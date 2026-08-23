@@ -6,7 +6,7 @@ import {
   mergeSnapshotMessages,
   upsertMessage,
 } from "../skills/learn-anything/blocks/web/src/message-state.mjs";
-import { resolveFocus, shouldReleaseRescue } from "../skills/learn-anything/blocks/web/src/workspace-state.mjs";
+import { connectionIssueFor, resolveFocus, shouldReleaseRescue } from "../skills/learn-anything/blocks/web/src/workspace-state.mjs";
 
 test("message start keeps a stable object after the partial map is cleared", () => {
   const event = { messageId: "message-1", role: "user" };
@@ -41,13 +41,29 @@ test("snapshot reconciliation keeps an in-flight partial", () => {
 });
 
 test("workspace focus is explicit with an interactive fallback", () => {
-  assert.equal(resolveFocus({ focus: "chat", components: [{ type: "code", runnable: true }] }), "chat");
-  assert.equal(resolveFocus({ components: [{ type: "code", runnable: true }] }), "work");
-  assert.equal(resolveFocus({ components: [{ type: "markdown" }] }), "chat");
+  const canvas = (focus, components) => ({
+    ...(focus ? { focus } : {}),
+    activeSurfaceId: "lesson",
+    surfaces: {
+      lesson: {
+        components: Object.fromEntries(components.map((component, index) => [`component-${index}`, component])),
+      },
+    },
+  });
+  assert.equal(resolveFocus(canvas("chat", [{ component: "Code", runnable: true }])), "chat");
+  assert.equal(resolveFocus(canvas(null, [{ component: "Code", runnable: true }])), "work");
+  assert.equal(resolveFocus(canvas(null, [{ component: "Markdown" }])), "chat");
 });
 
-test("rescue yields only to an explicit chat stage or a new surface", () => {
-  assert.equal(shouldReleaseRescue({ surfaceId: "same", focus: "work" }, "same"), false);
-  assert.equal(shouldReleaseRescue({ surfaceId: "same", focus: "chat" }, "same"), true);
-  assert.equal(shouldReleaseRescue({ surfaceId: "next", focus: "work" }, "same"), true);
+test("rescue yields only to explicit chat focus or a new A2UI surface", () => {
+  assert.equal(shouldReleaseRescue({ activeSurfaceId: "same", focus: "work" }, "same"), false);
+  assert.equal(shouldReleaseRescue({ activeSurfaceId: "same", focus: "chat" }, "same"), true);
+  assert.equal(shouldReleaseRescue({ activeSurfaceId: "next", focus: "work" }, "same"), true);
+});
+
+test("failed fetch reports a stopped workspace instead of raw network text", () => {
+  assert.deepEqual(connectionIssueFor(new TypeError("Failed to fetch")), {
+    title: "Workspace stopped",
+    message: "Your work is saved locally. Restart the workspace from your coding agent, then reload this page.",
+  });
 });

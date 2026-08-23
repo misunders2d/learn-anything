@@ -23,8 +23,8 @@ test("Claude tool stream and session id map without losing identifiers", () => {
     { type: "CUSTOM", name: "mentor_session", value: { sessionId: "session-1" } },
   ]);
   const base = { type: "stream_event", uuid: "u2", session_id: "session-1" };
-  assert.deepEqual(mapClaudeMessage({ ...base, event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "tool-1", name: "render_stage" } } }, state), [
-    { type: "TOOL_CALL_START", toolCallId: "tool-1", toolCallName: "render_stage" },
+  assert.deepEqual(mapClaudeMessage({ ...base, event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "tool-1", name: "render_canvas" } } }, state), [
+    { type: "TOOL_CALL_START", toolCallId: "tool-1", toolCallName: "render_canvas" },
   ]);
   assert.deepEqual(mapClaudeMessage({ ...base, event: { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"" } } }, state), [
     { type: "TOOL_CALL_ARGS", toolCallId: "tool-1", delta: "{\"" },

@@ -75,7 +75,7 @@ test("public CLI start serves the assembled workspace and shuts down cleanly", a
       "--json",
     ]);
     const sessionDir = JSON.parse(created.stdout).sessionDir;
-    child = spawn(process.execPath, [cli, "start", "--session", sessionDir, "--port", "0", "--no-open", "--json"], {
+    child = spawn(process.execPath, [cli, "start", "--session", sessionDir, "--port", "0", "--no-open", "--no-mentor", "--json"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -117,6 +117,29 @@ test("public CLI start serves the assembled workspace and shuts down cleanly", a
     child = null;
   } finally {
     if (child && !child.killed) child.kill("SIGTERM");
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI refuses to open an interactive workspace without a persistent mentor", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-cli-mentor-"));
+  try {
+    const created = await execFileAsync(process.execPath, [
+      cli,
+      "create",
+      "Persistent mentor",
+      "--root",
+      root,
+      "--profile",
+      "portable-shell",
+      "--json",
+    ]);
+    const sessionDir = JSON.parse(created.stdout).sessionDir;
+    await assert.rejects(
+      execFileAsync(process.execPath, [cli, "start", "--session", sessionDir, "--no-open", "--json"]),
+      /no persistent mentor/i,
+    );
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

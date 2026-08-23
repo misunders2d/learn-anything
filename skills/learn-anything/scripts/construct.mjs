@@ -5,6 +5,7 @@ import process from "node:process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { probeCapabilities } from "./probe.mjs";
+import { canvasFromStage, createInitialCanvas } from "../blocks/a2ui/state.mjs";
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 export const kitRoot = resolve(scriptsDir, "..");
@@ -30,15 +31,6 @@ async function atomicJson(path, value) {
   await rename(temp, path);
 }
 
-function initialStage(topic) {
-  return {
-    version: "learn-anything/v1",
-    surfaceId: "lesson",
-    focus: "chat",
-    title: topic,
-    components: [],
-  };
-}
 
 export async function constructSession({
   topic,
@@ -55,7 +47,7 @@ export async function constructSession({
   const selectedProfile = profile === "auto"
     ? capabilities.harness === "claude-code"
       ? "reference-streaming"
-      : capabilities.harness === "codex" && capabilities.commands.codex
+      : capabilities.commands.codex
         ? "codex-cli"
         : "portable-shell"
     : profile;
@@ -79,7 +71,7 @@ export async function constructSession({
     if (error.code !== "ENOENT") throw error;
     const now = new Date().toISOString();
     session = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       topic: topic.trim(),
       slug: slugifyTopic(topic),
       sourceRoot,
@@ -88,16 +80,16 @@ export async function constructSession({
       agentSessionId: null,
       security: { accessToken: randomBytes(32).toString("base64url") },
       transcript: [],
-      stage: initialStage(topic.trim()),
+      canvas: createInitialCanvas(topic.trim()),
       progress: { milestone: 0, status: "created" },
       assembly: {
-        kitVersion: "0.1.0",
+        kitVersion: "0.1.2",
         profile: selectedProfile,
         blocks: selectedProfile === "portable-shell"
-          ? ["server.node-sse", "web.dynamic-stage", "adapter.shell-long-poll", "execution.host-fixed-runners"]
+          ? ["server.node-sse", "web.a2ui-canvas", "adapter.shell-long-poll", "execution.host-fixed-runners"]
           : selectedProfile === "codex-cli"
-            ? ["server.node-sse", "web.dynamic-stage", "adapter.codex-cli", "execution.host-fixed-runners"]
-            : ["server.node-sse", "web.dynamic-stage", "adapter.claude-agent-sdk", "execution.host-fixed-runners"],
+            ? ["server.node-sse", "web.a2ui-canvas", "adapter.codex-cli", "execution.host-fixed-runners"]
+            : ["server.node-sse", "web.a2ui-canvas", "adapter.claude-agent-sdk", "execution.host-fixed-runners"],
         capabilities,
         degraded: [
           ...(selectedProfile === "portable-shell" ? ["mentor-output-may-arrive-per-turn"] : []),
@@ -110,6 +102,13 @@ export async function constructSession({
     await atomicJson(sessionPath, session);
     await writeFile(join(sessionDir, "journal.md"), `# ${topic.trim()} — learning journal\n\n`, { flag: "wx" });
     await writeFile(join(sessionDir, "notes.md"), `# ${topic.trim()} — notes\n\n`, { flag: "wx" });
+  }
+
+  if (!session.canvas) {
+    session.canvas = canvasFromStage(session.stage, session.topic);
+    delete session.stage;
+    session.schemaVersion = 2;
+    await atomicJson(sessionPath, session);
   }
 
   if (!session.security?.accessToken) {

@@ -47,12 +47,12 @@ async function* browserMessages(url, token, mentorId, abortSignal, onMessage) {
     const item = await response.json();
     if (!response.ok) throw new Error(item.error || response.statusText);
     const content = item.type === "user_message" && item.message?.source === "work"
-      ? `Learner asks an inline clarification from the current work surface. Answer without replacing or leaving the activity.\nQuestion: ${item.message.content}\nCurrent stage: ${JSON.stringify(item.stageContext, null, 2)}`
+      ? `Learner asks an inline clarification from the current work canvas. Answer without replacing or leaving the activity.\nQuestion: ${item.message.content}\nCurrent A2UI canvas: ${JSON.stringify(item.canvasContext, null, 2)}`
       : item.type === "user_message"
         ? item.message.content
       : item.type === "execution_result"
         ? `Learner execution result (${item.language}):\n${JSON.stringify(item.result, null, 2)}`
-        : `Browser stage action:\n${JSON.stringify(item.action, null, 2)}`;
+        : `Browser canvas action:\n${JSON.stringify(item.action, null, 2)}`;
     await onMessage(item);
     yield {
       type: "user",
@@ -73,16 +73,19 @@ if (!token) throw new Error("Session has no access token.");
 const abortController = new AbortController();
 let activeRunId = null;
 const mentorId = crypto.randomUUID();
-const renderStage = tool(
-  "render_stage",
-  "Replace the browser learning stage and set the whole workspace focus to chat or work. Use only supported catalog component types.",
-  { payload: z.object({ focus: z.enum(["chat", "work"]) }).catchall(z.unknown()) },
-  async ({ payload }) => {
+const renderCanvas = tool(
+  "render_canvas",
+  "Apply A2UI v0.9 messages to the browser learning canvas and set chat or work focus.",
+  {
+    focus: z.enum(["chat", "work"]),
+    messages: z.array(z.record(z.string(), z.unknown())).max(100),
+  },
+  async ({ focus, messages }) => {
     try {
-      const result = await post(url, "/api/stage", payload, token, mentorId);
-      return { content: [{ type: "text", text: `Stage updated: ${result.surfaceId || "unnamed"}` }] };
+      const result = await post(url, "/api/a2ui", { focus, messages }, token, mentorId);
+      return { content: [{ type: "text", text: `Canvas updated: ${result.surfaceId || "preserved"}` }] };
     } catch (error) {
-      return { content: [{ type: "text", text: `Stage update failed: ${error.message}` }], isError: true };
+      return { content: [{ type: "text", text: `Canvas update failed: ${error.message}` }], isError: true };
     }
   },
 );
@@ -103,11 +106,17 @@ const saveMilestone = tool(
 );
 const learningTools = createSdkMcpServer({
   name: "learn_anything",
-  version: "0.1.0",
-  tools: [renderStage, saveMilestone],
+  version: "0.1.2",
+  tools: [renderCanvas, saveMilestone],
 });
 
-const systemAppend = `You are the headless mentor inside a learn-anything browser workspace. The browser is the learner-facing surface and your observation layer. Teach toward this goal: ${session.topic}. Assume no prior knowledge until conversation demonstrates otherwise; infer level continuously instead of asking the learner to self-label or presenting an opening test. Before code, explain the needed idea, give a worked example when useful, state one clear change, and show the expected result. Increase compression and difficulty only as the learner demonstrates readiness. React automatically to submitted code, execution output, errors, and interactive answers; unsent drafts persist without waking you. Never ask the learner to repeat or check off evidence the browser already captured. Use checklists only for external actions the workspace cannot observe. For humanities and conceptual science, begin with one concrete anchor, a short explanation, and a meaningful learner question; do not dump a field survey, force code, or open a stage merely to use it. For a humanities beginner, keep the first turn to that anchor, why it matters, and one choice or question—do not list periods, authors, or genres unless the learner asks. Use a passage, comparison, timeline, diagram, or thought experiment only when it advances the current idea. For demonstrated technical experts, skip basic ceremony and move to a realistic example or failure mode. Use Socratic guidance and progressive hints. Drive one primary browser activity at a time: every render_stage payload must set focus to "chat" while explaining, asking, or debriefing, and to "work" only when the learner has one clear interactive task. An inline work-surface clarification must be answered without calling render_stage or leaving the activity; the browser shows that answer beside the preserved editor. Full chat and Ask mentor remain available for broader discussion. Never create a split view or ask the learner to manage layout. Keep implementation scaffolding backstage: the learner sees and edits only the subject's own artifact. A SQL lesson shows pure SQL with hidden setup in code.run.setup and code.run.runner "sqlite", never Python sqlite3 plumbing. If no subject-native runner exists, present a non-runnable artifact instead of wrapping it in another language. Prefer structured subject feedback. Use render_stage whenever a subject-native interactive surface materially helps. Exact component fields: markdown {id,type,content}; callout {id,type,tone,title,content}; code {id,type,language,value,runnable,run:{runner,setup?}}; table {id,type,caption,columns,rows}; passage {id,type,text,source?,annotations?}; figure {id,type,mermaid,caption?,callouts?}; params {id,type,title?,controls:[{id,label,min,max,step,value}]}; mermaid {id,type,source}; quiz {id,type,question,options:[{id,label}]}; checklist {id,type,items:[{id,label,done}]}. Never claim code ran unless browser execution reports it. Use save_milestone after meaningful progress. Project source is read-only; learning directory is your working area. Current degraded capabilities: ${(session.assembly?.degraded || []).join(", ") || "none"}.`;
+const systemAppend = `You are the headless mentor inside a learn-anything browser workspace. The browser is the learner-facing surface and observation layer. Teach toward: ${session.topic}. Assume no prior knowledge until the learner demonstrates it. Explain a concept before code, use progressive hints, and react automatically to submitted artifacts, execution output, errors, and interactive answers. Never ask the learner to repeat evidence the browser captured.
+
+Drive one primary activity at a time. Use chat focus for explanation, questions, alignment, and debrief. Use work focus only after preparing one clear interactive task. Inline work clarification stays on the current canvas: answer without calling render_canvas so the editor and result remain mounted. Keep implementation scaffolding backstage and show the subject's native artifact.
+
+When creating or updating work, call render_canvas with actual A2UI v0.9 messages. A new canvas normally sends createSurface, updateComponents, and updateDataModel. Use catalogId "urn:learn-anything:catalog:v1". updateComponents uses a flat adjacency list with one root component: {"id":"root","component":"Column","children":["intro"]}. Supported learning components are Markdown, Callout, Code, Table, Passage, Figure, Params, Mermaid, Quiz, and Checklist. Their property names match the kit stage catalog except the discriminator is component, not type. Code uses {language,value,runnable,run:{runner,setup?}}. All messages include version "v0.9". Never send executable UI code.
+
+Never claim code ran unless browser execution reports it. Use save_milestone after meaningful progress. Project source is read-only; the learning directory is writable. Current degraded capabilities: ${(session.assembly?.degraded || []).join(", ") || "none"}.`;
 const state = createClaudeEventState();
 let activeBrowserItem = null;
 const sdkQuery = query({
@@ -123,7 +132,7 @@ const sdkQuery = query({
     includePartialMessages: true,
     systemPrompt: { type: "preset", preset: "claude_code", append: systemAppend },
     tools: ["Read", "Grep", "Glob"],
-    allowedTools: ["Read", "Grep", "Glob", "mcp__learn_anything__render_stage", "mcp__learn_anything__save_milestone"],
+    allowedTools: ["Read", "Grep", "Glob", "mcp__learn_anything__render_canvas", "mcp__learn_anything__save_milestone"],
     mcpServers: { learn_anything: learningTools },
     ...(session.agentSessionId ? { resume: session.agentSessionId } : {}),
   },

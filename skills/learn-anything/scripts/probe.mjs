@@ -18,9 +18,10 @@ function browserOpener(platform) {
 }
 
 function harnessHint(env) {
+  if (env.OMPCODE) return "omp";
+  if (env.PI_CODING_AGENT || env.PI_AGENT) return "pi";
   if (env.CLAUDECODE) return "claude-code";
   if (env.CODEX_THREAD_ID || env.CODEX_CI || env.CODEX_SANDBOX_NETWORK_DISABLED) return "codex";
-  if (env.PI_CODING_AGENT || env.PI_AGENT) return "pi";
   if (env.GEMINI_CLI || env.ANTIGRAVITY_AGENT) return "gemini-or-antigravity";
   return "unknown";
 }
