@@ -23,8 +23,9 @@ Use the bundled browser shell as a visual system, not as a generic dashboard tem
 1. Determine kit root from this `SKILL.md` location.
 2. Run `node <kit-root>/bin/learn-anything.mjs probe --json`.
 3. Choose the smallest compatible persistent profile:
+   - Read `profiles/pi-cli.json` when Pi is the active harness. It uses Pi headless mode as a persistent browser mentor; never substitute the manual shell bridge.
    - Read `profiles/reference.json` only when the Claude Agent SDK is the active authenticated adapter.
-   - Read `profiles/codex-cli.json` whenever the installed Codex CLI is the available persistent adapter, including OMP and Pi.
+   - Read `profiles/codex-cli.json` whenever the installed Codex CLI is the available persistent adapter.
    - Use `profiles/portable-shell.json` only for explicit manual/degraded operation. It cannot wake a terminal agent from the browser and must never be presented as live mentorship.
 4. Choose learning root:
    - Current project goal: `<project-root>/.learnings/<topic-slug>/`.

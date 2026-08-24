@@ -1,0 +1,14 @@
+{
+  "id": "pi-cli",
+  "description": "Persistent browser mentor composition using the installed Pi headless CLI.",
+  "selection": { "priority": 80, "requiredCommands": ["pi"], "preferredHarnesses": ["pi"], "preferenceBonus": 100 },
+  "blocks": [
+    "server.node-sse",
+    "web.a2ui-canvas",
+    "adapter.pi-cli"
+  ],
+  "mentorBridge": "pi-print",
+  "preferredProtocols": ["AG-UI", "A2UI-v0.9"],
+  "degraded": ["mentor-output-arrives-after-headless-turn"],
+  "requiredOutcome": "usable-dynamic-adaptive-browser"
+}

@@ -19,6 +19,7 @@ test("probe reports constructor-relevant capabilities", () => {
   assert.equal(typeof result.languages.javascript, "boolean");
   assert.equal(typeof result.languages.sql, "boolean");
   assert.ok("containerRuntime" in result);
+  assert.ok("pi" in result.commands);
   assert.ok(Array.isArray(result.warnings));
 });
 test("probe does not treat missing containers as a degradation", () => {
@@ -147,6 +148,22 @@ test("auto profile selects the highest-capability streaming adapter in OMP", asy
     assert.equal(result.profile, "reference-streaming");
     const session = JSON.parse(await readFile(result.sessionPath, "utf8"));
     assert.ok(session.assembly.blocks.includes("adapter.claude-agent-sdk"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("auto profile selects the native Pi adapter in Pi", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-pi-profile-"));
+  try {
+    const result = await constructSession({
+      topic: "Java",
+      root,
+      env: { PI_CODING_AGENT: "1" },
+    });
+    assert.equal(result.profile, "pi-cli");
+    const session = JSON.parse(await readFile(result.sessionPath, "utf8"));
+    assert.ok(session.assembly.blocks.includes("adapter.pi-cli"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

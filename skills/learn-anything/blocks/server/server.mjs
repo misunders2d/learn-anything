@@ -202,6 +202,24 @@ export async function createLearnAnythingServer({
   let interruptHandler = null;
   let pendingRuns = 0;
   let persistTail = Promise.resolve();
+  let browserDisconnectHandler = null;
+  let browserDisconnectGraceMs = 5_000;
+  let browserDisconnectTimer = null;
+  let browserHasConnected = false;
+
+  function cancelBrowserDisconnect() {
+    clearTimeout(browserDisconnectTimer);
+    browserDisconnectTimer = null;
+  }
+
+  function scheduleBrowserDisconnect() {
+    if (!browserHasConnected || clients.size > 0 || !browserDisconnectHandler || browserDisconnectTimer) return;
+    browserDisconnectTimer = setTimeout(() => {
+      browserDisconnectTimer = null;
+      if (clients.size === 0) void browserDisconnectHandler();
+    }, browserDisconnectGraceMs);
+    browserDisconnectTimer.unref?.();
+  }
 
   function authorizeApi(request, url) {
     const origin = request.headers.origin;
@@ -456,10 +474,13 @@ export async function createLearnAnythingServer({
           },
         }))}\n\n`);
         clients.add(response);
+        browserHasConnected = true;
+        cancelBrowserDisconnect();
         const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
         request.on("close", () => {
           clearInterval(heartbeat);
           clients.delete(response);
+          scheduleBrowserDisconnect();
         });
         return;
       }
@@ -691,6 +712,11 @@ export async function createLearnAnythingServer({
     setInterruptHandler(handler) {
       interruptHandler = typeof handler === "function" ? handler : null;
     },
+    setBrowserDisconnectHandler(handler, { graceMs = 5_000 } = {}) {
+      browserDisconnectHandler = typeof handler === "function" ? handler : null;
+      browserDisconnectGraceMs = Math.max(0, Number(graceMs) || 0);
+      if (!browserDisconnectHandler) cancelBrowserDisconnect();
+    },
     async listen() {
       await new Promise((resolvePromise, reject) => {
         server.once("error", reject);
@@ -702,6 +728,7 @@ export async function createLearnAnythingServer({
       return { host, port: actualPort, url, launchUrl: `${url}/#token=${encodeURIComponent(accessToken)}`, accessToken };
     },
     async close() {
+      cancelBrowserDisconnect();
       for (const client of clients) client.end();
       clients.clear();
       for (const waiter of [...mentorWaiters]) waiter.finish(null);

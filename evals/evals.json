@@ -133,6 +133,18 @@
         "Any dependency installation stays project-local or user-scoped unless explicit approval is obtained for a system change.",
         "The learner is told that host-run code has the current user's local permissions when runnable code appears."
       ]
+    },
+    {
+      "id": 13,
+      "prompt": "I am using Pi. Teach me Java basics in the browser, and keep answering there after I press Send without requiring me to return to the terminal.",
+      "expected_output": "Agent selects the native Pi profile, launches a staffed browser workspace, and browser submissions receive automatic Pi mentor replies.",
+      "files": [],
+      "expectations": [
+        "The selected composition uses adapter.pi-cli rather than the manual shell-long-poll adapter.",
+        "The browser receives a mentor response without another Pi user turn or terminal nudge.",
+        "The browser remains the primary learning surface.",
+        "The server stops after the final browser tab closes or the owning agent exits."
+      ]
     }
   ]
 }

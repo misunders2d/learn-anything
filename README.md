@@ -120,13 +120,13 @@ Pi reads the package through its `pi.skills` manifest. Oh My Pi discovers the sa
 
 ## Safety and privacy
 
-Learning sessions and saved progress stay on the local computer, while mentor prompts are processed by the selected model provider. The browser server accepts requests only from its own origin and protects session routes with a per-session token. Execution is selected for the lesson and verified machine capabilities. Host runners use fixed commands but learner programs retain the current user's filesystem and process permissions. When explicitly selected, the optional Docker or Podman block runs learner code with no network, a read-only root, bounded resources, and only the learning directory writable.
+Learning sessions and saved progress stay on the local computer, while mentor prompts are processed by the selected model provider. The browser server accepts requests only from its own origin and protects session routes with a per-session token. It stops when its owning agent exits or after the final browser tab disconnects. Execution is selected for the lesson and verified machine capabilities. Host runners use fixed commands but learner programs retain the current user's filesystem and process permissions. When explicitly selected, the optional Docker or Podman block runs learner code with no network, a read-only root, bounded resources, and only the learning directory writable.
 
 Review package source before installation. Pi and Oh My Pi packages run with the same local access as the agent that loads them.
 
 ## Current limits
 
-The package includes Claude, Codex, and explicit manual-shell adapters. Other agents integrate through the same mentor HTTP/runtime contract and capability metadata; unsupported environments stop before opening an unstaffed browser. Host and container execution blocks are available, but neither Docker nor Podman is required. Voice runtimes and a native adapter for every harness are not included yet.
+The package includes native Pi, Claude, Codex, and explicit manual-shell adapters. Pi headless mode keeps browser submissions active without requiring a terminal nudge. Other agents integrate through the same mentor HTTP/runtime contract and capability metadata; unsupported environments stop before opening an unstaffed browser. Host and container execution blocks are available, but neither Docker nor Podman is required. Voice runtimes and a native adapter for every other harness are not included yet.
 
 ## Development
 

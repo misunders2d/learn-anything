@@ -68,6 +68,23 @@
       "smokeCheck": "real browser message reaches codex exec and returns mentor text"
     },
     {
+      "id": "adapter.pi-cli",
+      "version": 1,
+      "kind": "mentor-adapter",
+      "path": "blocks/adapters/pi-cli/adapter.mjs",
+      "requires": ["pi-cli-auth", "node>=20"],
+      "provides": ["persistent-mentor", "session-resume", "canvas-updates"],
+      "runtime": {
+        "protocolVersion": 1,
+        "runtime": "node",
+        "entry": "blocks/adapters/pi-cli/adapter.mjs",
+        "persistent": true,
+        "capabilities": { "streaming": false, "interrupt": "process", "resume": true }
+      },
+      "degraded": ["turn-complete-output"],
+      "smokeCheck": "real browser message reaches pi --print and returns mentor text"
+    },
+    {
       "id": "execution.container",
       "version": 1,
       "kind": "execution",

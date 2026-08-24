@@ -133,6 +133,7 @@ async function main() {
         await supervisor.start();
       }
       clearOwnerWatch = watchOwnerProcess({ ownerPid, onOwnerExit: stop });
+      runtime.setBrowserDisconnectHandler(stop);
       const capabilities = probeCapabilities();
       const shouldOpen = has(args, "--open") && !has(args, "--no-open");
       const opened = shouldOpen ? openBrowser(address.launchUrl, capabilities.browserOpener) : false;

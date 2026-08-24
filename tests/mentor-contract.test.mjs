@@ -20,6 +20,10 @@ test("profile selection prefers verified capabilities rather than harness branch
     harness: "omp",
     commands: { claude: "/usr/bin/claude", codex: "/usr/bin/codex" },
   });
+  const pi = selectProfile(profiles, {
+    harness: "pi",
+    commands: { pi: "/usr/bin/pi", claude: "/usr/bin/claude", codex: "/usr/bin/codex" },
+  });
   const codexOnly = selectProfile(profiles, {
     harness: "future-agent",
     commands: { codex: "/usr/bin/codex" },
@@ -31,6 +35,7 @@ test("profile selection prefers verified capabilities rather than harness branch
 
   assert.equal(claude.id, "reference-streaming");
   assert.equal(omp.id, "reference-streaming");
+  assert.equal(pi.id, "pi-cli");
   assert.equal(codexOnly.id, "codex-cli");
   assert.equal(unknown.id, "portable-shell");
 });
@@ -47,6 +52,19 @@ test("mentor runtime resolves the adapter declared by the composition", async ()
   assert.equal(descriptor.protocolVersion, 1);
   assert.equal(descriptor.runtime, "node");
   assert.match(descriptor.entry, /blocks\/adapters\/codex-cli\/adapter\.mjs$/);
+  assert.equal(descriptor.capabilities.resume, true);
+  assert.equal(descriptor.capabilities.streaming, false);
+  assert.equal(descriptor.capabilities.interrupt, "process");
+});
+
+test("mentor runtime resolves the native Pi adapter", async () => {
+  const catalog = await loadBlockCatalog(kitRoot);
+  const descriptor = resolveMentorAdapter({
+    assembly: { blocks: ["server.node-sse", "web.a2ui-canvas", "adapter.pi-cli"] },
+  }, catalog, kitRoot);
+
+  assert.equal(descriptor.id, "adapter.pi-cli");
+  assert.match(descriptor.entry, /blocks\/adapters\/pi-cli\/adapter\.mjs$/);
   assert.equal(descriptor.capabilities.resume, true);
   assert.equal(descriptor.capabilities.streaming, false);
   assert.equal(descriptor.capabilities.interrupt, "process");
