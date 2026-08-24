@@ -1,14 +1,14 @@
 {
   "id": "portable-shell",
   "description": "Portable composition for local coding agents that have shell tools but no supported headless streaming adapter.",
+  "selection": { "priority": 0 },
   "blocks": [
     "server.node-sse",
     "web.a2ui-canvas",
-    "adapter.shell-long-poll",
-    "execution.host-fixed-runners"
+    "adapter.shell-long-poll"
   ],
   "mentorBridge": "shell-long-poll",
   "preferredProtocols": ["AG-UI", "A2UI-v0.9"],
-  "degraded": ["mentor-output-may-arrive-per-turn", "host-execution"],
+  "degraded": ["mentor-output-may-arrive-per-turn"],
   "requiredOutcome": "usable-dynamic-adaptive-browser"
 }

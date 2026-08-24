@@ -2,7 +2,7 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import process from "node:process";
-import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, startup, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { createClaudeEventState, mapClaudeMessage } from "./events.mjs";
 
@@ -106,7 +106,7 @@ const saveMilestone = tool(
 );
 const learningTools = createSdkMcpServer({
   name: "learn_anything",
-  version: "0.1.2",
+  version: "0.1.3",
   tools: [renderCanvas, saveMilestone],
 });
 
@@ -119,24 +119,25 @@ When creating or updating work, call render_canvas with actual A2UI v0.9 message
 Never claim code ran unless browser execution reports it. Use save_milestone after meaningful progress. Project source is read-only; the learning directory is writable. Current degraded capabilities: ${(session.assembly?.degraded || []).join(", ") || "none"}.`;
 const state = createClaudeEventState();
 let activeBrowserItem = null;
-const sdkQuery = query({
-  prompt: browserMessages(url, token, mentorId, abortController.signal, async (item) => {
-    activeBrowserItem = item;
-    activeRunId = crypto.randomUUID();
-    await post(url, "/api/mentor/event", { type: "RUN_STARTED", threadId: session.slug, runId: activeRunId }, token, mentorId);
-  }),
-  options: {
-    abortController,
-    cwd: sessionDir,
-    additionalDirectories: session.sourceRoot && session.sourceRoot !== sessionDir ? [session.sourceRoot] : [],
-    includePartialMessages: true,
-    systemPrompt: { type: "preset", preset: "claude_code", append: systemAppend },
-    tools: ["Read", "Grep", "Glob"],
-    allowedTools: ["Read", "Grep", "Glob", "mcp__learn_anything__render_canvas", "mcp__learn_anything__save_milestone"],
-    mcpServers: { learn_anything: learningTools },
-    ...(session.agentSessionId ? { resume: session.agentSessionId } : {}),
-  },
-});
+const sdkOptions = {
+  abortController,
+  cwd: sessionDir,
+  additionalDirectories: session.sourceRoot && session.sourceRoot !== sessionDir ? [session.sourceRoot] : [],
+  includePartialMessages: true,
+  systemPrompt: { type: "preset", preset: "claude_code", append: systemAppend },
+  tools: ["Read", "Grep", "Glob"],
+  allowedTools: ["Read", "Grep", "Glob", "mcp__learn_anything__render_canvas", "mcp__learn_anything__save_milestone"],
+  mcpServers: { learn_anything: learningTools },
+  ...(session.agentSessionId ? { resume: session.agentSessionId } : {}),
+};
+const warmQuery = await startup({ options: sdkOptions, initializeTimeoutMs: 20_000 });
+await post(url, "/api/mentor/register", { mentorId, takeover: true }, token, mentorId);
+await post(url, "/api/mentor/ready", {}, token, mentorId);
+const sdkQuery = warmQuery.query(browserMessages(url, token, mentorId, abortController.signal, async (item) => {
+  activeBrowserItem = item;
+  activeRunId = crypto.randomUUID();
+  await post(url, "/api/mentor/event", { type: "RUN_STARTED", threadId: session.slug, runId: activeRunId }, token, mentorId);
+}));
 
 const stop = () => abortController.abort();
 process.once("SIGINT", stop);

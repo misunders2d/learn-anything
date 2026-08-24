@@ -3,6 +3,10 @@ export const LEARNING_CATALOG_ID = "urn:learn-anything:catalog:v1";
 
 const MAX_MESSAGES = 100;
 const MAX_COMPONENTS = 250;
+const MAX_SURFACES = 16;
+const MAX_TOTAL_COMPONENTS = 1_000;
+const MAX_GRAPH_DEPTH = 32;
+const MAX_CANVAS_BYTES = 1_000_000;
 const BLOCKED_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
 
 function protocolError(message) {
@@ -89,6 +93,47 @@ function updateDataModel(surface, path, value) {
   target[segments.at(-1)] = clone(value);
 }
 
+function validateSurfaceGraph(surface) {
+  if (surface.catalogId !== LEARNING_CATALOG_ID) throw protocolError(`Unsupported A2UI catalog: ${surface.catalogId}`);
+  const components = surface.components || {};
+  const root = components.root;
+  if (!root) throw protocolError(`A2UI surface ${surface.id} has no root component.`);
+  const visiting = new Set();
+  const visited = new Set();
+
+  function visit(id, depth) {
+    if (depth > MAX_GRAPH_DEPTH) throw protocolError(`A2UI surface ${surface.id} exceeds maximum graph depth.`);
+    if (visiting.has(id)) throw protocolError(`A2UI surface ${surface.id} contains a component cycle at ${id}.`);
+    if (visited.has(id)) return;
+    const component = components[id];
+    if (!component) throw protocolError(`A2UI surface ${surface.id} references missing component ${id}.`);
+    visiting.add(id);
+    if (component.component === "Column" || component.component === "Row") {
+      if (!Array.isArray(component.children)) throw protocolError(`A2UI layout component ${id} requires children.`);
+      for (const childId of component.children) {
+        boundedId(childId, `A2UI child of ${id}`);
+        visit(childId, depth + 1);
+      }
+    }
+    visiting.delete(id);
+    visited.add(id);
+  }
+
+  visit("root", 0);
+  if (visited.size !== Object.keys(components).length) {
+    throw protocolError(`A2UI surface ${surface.id} contains unreachable components.`);
+  }
+}
+
+function validateCanvas(canvas) {
+  const surfaces = Object.values(canvas.surfaces || {});
+  if (surfaces.length > MAX_SURFACES) throw protocolError(`A2UI canvas exceeds ${MAX_SURFACES} surfaces.`);
+  const componentCount = surfaces.reduce((total, surface) => total + Object.keys(surface.components || {}).length, 0);
+  if (componentCount > MAX_TOTAL_COMPONENTS) throw protocolError(`A2UI canvas exceeds ${MAX_TOTAL_COMPONENTS} components.`);
+  for (const surface of surfaces) validateSurfaceGraph(surface);
+  if (JSON.stringify(canvas).length > MAX_CANVAS_BYTES) throw protocolError("A2UI canvas exceeds 1 MB.");
+}
+
 export function applyA2uiMessages(current, messages, { focus } = {}) {
   if (!Array.isArray(messages) || messages.length === 0 || messages.length > MAX_MESSAGES) {
     throw protocolError(`A2UI messages must contain between 1 and ${MAX_MESSAGES} entries.`);
@@ -104,6 +149,7 @@ export function applyA2uiMessages(current, messages, { focus } = {}) {
     if (kind === "createSurface") {
       const surfaceId = boundedId(body.surfaceId, "surfaceId");
       const catalogId = boundedId(body.catalogId, "catalogId");
+      if (catalogId !== LEARNING_CATALOG_ID) throw protocolError(`Unsupported A2UI catalog: ${catalogId}`);
       canvas.surfaces[surfaceId] = {
         id: surfaceId,
         catalogId,
@@ -136,6 +182,7 @@ export function applyA2uiMessages(current, messages, { focus } = {}) {
       updateDataModel(surface, body.path, body.value);
     }
   }
+  validateCanvas(canvas);
   return canvas;
 }
 

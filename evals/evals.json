@@ -121,6 +121,18 @@
         "If no subject-native runner exists, the agent uses a non-runnable native artifact rather than another language as a wrapper.",
         "Feedback is rendered beside the relevant artifact in a subject-appropriate form."
       ]
+    },
+    {
+      "id": 12,
+      "prompt": "Teach me pandas by exploring a small CSV in the browser. Python is installed, but Docker and Podman are not. Install lightweight dependencies if needed, but do not make privileged system changes without asking.",
+      "expected_output": "Agent proceeds without treating missing containers as a blocker, selects a suitable local Python execution path, and provisions dependencies in project or user scope.",
+      "files": [],
+      "expectations": [
+        "The agent does not require or recommend installing Docker or Podman merely because they are absent.",
+        "The agent selects execution from the lesson needs and available Python capability.",
+        "Any dependency installation stays project-local or user-scoped unless explicit approval is obtained for a system change.",
+        "The learner is told that host-run code has the current user's local permissions when runnable code appears."
+      ]
     }
   ]
 }

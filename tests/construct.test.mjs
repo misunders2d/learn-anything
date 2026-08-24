@@ -21,6 +21,17 @@ test("probe reports constructor-relevant capabilities", () => {
   assert.ok("containerRuntime" in result);
   assert.ok(Array.isArray(result.warnings));
 });
+test("probe does not treat missing containers as a degradation", () => {
+  const result = probeCapabilities({
+    env: {},
+    platform: "linux",
+    resolveCommand: (command) => command === "node" ? "/usr/bin/node" : null,
+  });
+  assert.equal(result.commands.python3, null);
+  assert.equal(result.containerRuntime, null);
+  assert.equal(result.warnings.some((warning) => /Docker|Podman|container/i.test(warning)), false);
+});
+
 
 test("probe identifies OMP before compatibility environment markers", () => {
   const result = probeCapabilities({
@@ -41,12 +52,60 @@ test("construct creates and resumes without replacing session state", async () =
     assert.ok(initial.assembly.blocks.includes("adapter.shell-long-poll"));
     assert.equal(initial.assembly.validation.status, "pending");
     assert.match(initial.security.accessToken, /^[A-Za-z0-9_-]{40,}$/);
+    assert.equal(initial.schemaVersion, 3);
+    assert.equal(initial.assembly.schemaVersion, 1);
+    assert.equal(initial.assembly.blockVersions["web.a2ui-canvas"], 1);
+    assert.equal(initial.assembly.execution.mode, "host");
 
     const second = await constructSession({ topic: "Rust lifetimes", root, env: {}, profile: "portable-shell" });
     assert.equal(second.resumed, true);
     const resumed = JSON.parse(await readFile(second.sessionPath, "utf8"));
     assert.equal(resumed.createdAt, initial.createdAt);
     assert.deepEqual(resumed.transcript, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("profile changes require explicit migration and preserve a backup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-migration-"));
+  try {
+    const first = await constructSession({ topic: "Migration", root, profile: "portable-shell", env: {} });
+    const session = JSON.parse(await readFile(first.sessionPath, "utf8"));
+    session.transcript.push({ id: "kept", role: "user", content: "preserve me" });
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(first.sessionPath, `${JSON.stringify(session, null, 2)}\n`));
+
+    await assert.rejects(
+      constructSession({ topic: "Migration", root, profile: "codex-cli", env: {} }),
+      /--migrate/,
+    );
+    const migrated = await constructSession({ topic: "Migration", root, profile: "codex-cli", env: {}, migrate: true });
+    assert.equal(migrated.profile, "codex-cli");
+    const current = JSON.parse(await readFile(first.sessionPath, "utf8"));
+    const backup = JSON.parse(await readFile(`${first.sessionPath}.v3.backup`, "utf8"));
+    assert.equal(current.transcript[0].content, "preserve me");
+    assert.equal(current.assembly.profile, "codex-cli");
+    assert.equal(current.assembly.validation.status, "pending");
+    assert.equal(backup.assembly.profile, "portable-shell");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("changed capabilities mark a resumed composition for revalidation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-revalidation-"));
+  try {
+    const first = await constructSession({ topic: "Revalidate", root, profile: "portable-shell", env: {} });
+    const session = JSON.parse(await readFile(first.sessionPath, "utf8"));
+    session.assembly.capabilityFingerprint = "stale-fingerprint";
+    session.assembly.validation = { status: "passed", checkedAt: new Date().toISOString() };
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(first.sessionPath, `${JSON.stringify(session, null, 2)}\n`));
+
+    const resumed = await constructSession({ topic: "Revalidate", root, profile: "portable-shell", env: {} });
+    assert.equal(resumed.requiresRevalidation, true);
+    const current = JSON.parse(await readFile(first.sessionPath, "utf8"));
+    assert.equal(current.assembly.validation.status, "stale");
+    assert.equal(current.assembly.validation.reason, "capabilities-changed");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -77,7 +136,7 @@ test("auto profile selects the bundled Codex CLI adapter in Codex", async () => 
   }
 });
 
-test("auto profile selects the persistent Codex adapter in OMP", async () => {
+test("auto profile selects the highest-capability streaming adapter in OMP", async () => {
   const root = await mkdtemp(join(tmpdir(), "learn-anything-omp-profile-"));
   try {
     const result = await constructSession({
@@ -85,9 +144,21 @@ test("auto profile selects the persistent Codex adapter in OMP", async () => {
       root,
       env: { OMPCODE: "1", CLAUDECODE: "1" },
     });
-    assert.equal(result.profile, "codex-cli");
+    assert.equal(result.profile, "reference-streaming");
     const session = JSON.parse(await readFile(result.sessionPath, "utf8"));
-    assert.ok(session.assembly.blocks.includes("adapter.codex-cli"));
+    assert.ok(session.assembly.blocks.includes("adapter.claude-agent-sdk"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("construct rejects unknown execution modes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-execution-"));
+  try {
+    await assert.rejects(
+      constructSession({ topic: "Databases", root, profile: "portable-shell", execution: "virtual-machine" }),
+      /Unknown execution mode/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

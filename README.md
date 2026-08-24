@@ -78,8 +78,10 @@ learn-anything probe
 Create a workspace:
 
 ```bash
-learn-anything create "Rust lifetimes" --root /path/to/project
+learn-anything create "Rust lifetimes" --root /path/to/project --execution host
 ```
+
+The invoking agent selects execution infrastructure for the lesson and machine. `host` uses installed fixed-command language runners; `container` uses an existing Docker or Podman runtime when stronger isolation is justified. Missing containers do not block construction. The agent should provision lightweight project-local or user-scope dependencies when needed and ask before any privileged system installation.
 
 Start it:
 
@@ -94,6 +96,14 @@ learn-anything smoke --session /path/to/project/.learnings/rust-lifetimes
 ```
 
 `start` prints a local URL and a token-bearing launch URL. Open only the launch URL. Use `--no-open` on headless systems and `--no-mentor` when testing the server by itself.
+
+After a package update or deliberate adapter change, `create` may require an explicit migration:
+
+```bash
+learn-anything create "Rust lifetimes" --root /path/to/project --profile <profile-id> --execution <host|container> --migrate
+```
+
+Migration preserves the transcript, canvas, exercises, and progress, writes a versioned `session.json` backup, rebuilds the versioned assembly manifest, and marks the composition for revalidation before launch.
 
 ## What is included
 
@@ -110,13 +120,13 @@ Pi reads the package through its `pi.skills` manifest. Oh My Pi discovers the sa
 
 ## Safety and privacy
 
-Learning sessions are local. The browser server accepts requests only from its own origin and protects session routes with a per-session token. Host execution is clearly recorded in each workspace manifest. Browser-provided text is never passed through as an arbitrary shell command; runners use fixed language commands and keep writable files inside the learning directory.
+Learning sessions and saved progress stay on the local computer, while mentor prompts are processed by the selected model provider. The browser server accepts requests only from its own origin and protects session routes with a per-session token. Execution is selected for the lesson and verified machine capabilities. Host runners use fixed commands but learner programs retain the current user's filesystem and process permissions. When explicitly selected, the optional Docker or Podman block runs learner code with no network, a read-only root, bounded resources, and only the learning directory writable.
 
 Review package source before installation. Pi and Oh My Pi packages run with the same local access as the agent that loads them.
 
 ## Current limits
 
-The package includes Claude, Codex, and portable shell profiles. Container image blocks, local voice runtimes, and a native adapter for every agent harness are not included yet. When no native mentor adapter is available, the portable shell profile keeps the browser workflow working with reduced streaming support.
+The package includes Claude, Codex, and explicit manual-shell adapters. Other agents integrate through the same mentor HTTP/runtime contract and capability metadata; unsupported environments stop before opening an unstaffed browser. Host and container execution blocks are available, but neither Docker nor Podman is required. Voice runtimes and a native adapter for every harness are not included yet.
 
 ## Development
 

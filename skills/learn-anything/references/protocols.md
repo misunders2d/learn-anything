@@ -8,7 +8,7 @@ Primary reference: https://docs.ag-ui.com/concepts/events
 
 ## A2UI
 
-The work canvas uses the stable A2UI v0.9 protocol family. Each JSON message has `"version": "v0.9"` and exactly one of `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface`. Components form a flat adjacency list rooted at id `root`; the trusted browser catalog maps declarative component names to local React implementations.
+The work canvas uses an A2UI v0.9 envelope-compatible Learn Anything catalog subset. Each JSON message has `"version": "v0.9"` and exactly one of `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface`. Components form a flat adjacency list rooted at id `root`; the trusted browser catalog maps declarative component names to local React implementations. The reducer validates catalog identity, graph references, cycles, depth, reachability, and bounded total state before replacing the last-known-good canvas.
 
 Primary reference: https://github.com/a2ui-project/a2ui
 

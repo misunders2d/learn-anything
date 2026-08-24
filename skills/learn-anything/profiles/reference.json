@@ -1,14 +1,14 @@
 {
   "id": "reference-streaming",
   "description": "Preferred dynamic browser composition for a harness with a persistent headless streaming adapter.",
+  "selection": { "priority": 80, "requiredCommands": ["claude"], "preferredHarnesses": ["claude-code", "omp", "pi"], "preferenceBonus": 50 },
   "blocks": [
     "server.node-sse",
     "web.a2ui-canvas",
-    "adapter.claude-agent-sdk",
-    "execution.host-fixed-runners"
+    "adapter.claude-agent-sdk"
   ],
   "mentorBridge": "claude-agent-sdk",
   "preferredProtocols": ["AG-UI", "A2UI"],
-  "degraded": ["host-execution"],
+  "degraded": [],
   "requiredOutcome": "usable-dynamic-adaptive-browser"
 }

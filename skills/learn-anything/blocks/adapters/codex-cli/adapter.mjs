@@ -10,6 +10,7 @@ import { mentorItemIsSuperseded } from "./turn-order.mjs";
 const adapterDir = dirname(fileURLToPath(import.meta.url));
 const schemaPath = resolve(adapterDir, "response.schema.json");
 
+let activeProviderChild = null;
 function option(args, name) {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : null;
@@ -34,6 +35,28 @@ async function mentorPost(url, path, token, mentorId, value) {
     method: "POST",
     headers: { "x-learn-anything-mentor": mentorId },
     body: JSON.stringify(value),
+  });
+}
+
+function preflightProvider(cwd) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn("codex", ["login", "status"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("Codex authentication preflight timed out."));
+    }, 10_000);
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-4_000); });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolvePromise();
+      else reject(new Error(`Codex authentication preflight failed: ${stderr.trim() || `exit ${code}`}`));
+    });
   });
 }
 
@@ -94,6 +117,7 @@ function runCodex({ sessionDir, threadId, prompt }) {
 
   return new Promise((resolvePromise, reject) => {
     const child = spawn("codex", args, { cwd: sessionDir, stdio: ["ignore", "pipe", "pipe"] });
+    activeProviderChild = child;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     let stdout = "";
@@ -102,6 +126,7 @@ function runCodex({ sessionDir, threadId, prompt }) {
     child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-12_000); });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
+      if (activeProviderChild === child) activeProviderChild = null;
       if (code !== 0) {
         reject(new Error(`codex exec exited ${code ?? signal}: ${stderr.trim() || "no error output"}`));
         return;
@@ -174,16 +199,24 @@ const session = JSON.parse(await readFile(resolve(sessionDir, "session.json"), "
 const token = option(args, "--token") || session.security?.accessToken;
 if (!token) throw new Error("Session has no access token.");
 const mentorId = randomUUID();
-let threadId = session.assembly?.profile === "codex-cli" ? session.agentSessionId : null;
-let firstPoll = true;
+let threadId = session.agentSessionId || null;
 let stopping = false;
-process.once("SIGINT", () => { stopping = true; });
-process.once("SIGTERM", () => { stopping = true; });
+const stop = () => {
+  stopping = true;
+  if (activeProviderChild?.exitCode === null) activeProviderChild.kill("SIGINT");
+};
+process.once("SIGINT", stop);
+process.once("SIGTERM", stop);
+
+await preflightProvider(sessionDir);
+await requestJson(url, "/api/mentor/register", token, {
+  method: "POST",
+  body: JSON.stringify({ mentorId, takeover: true }),
+});
+await mentorPost(url, "/api/mentor/ready", token, mentorId, {});
 
 while (!stopping) {
   const query = new URLSearchParams({ token, mentorId });
-  if (firstPoll) query.set("takeover", "1");
-  firstPoll = false;
   const response = await fetch(`${url}/api/mentor/next?${query}`);
   if (response.status === 204) continue;
   const item = await response.json().catch(() => null);

@@ -33,8 +33,13 @@ test("server persists real A2UI v0.9 surface messages", async () => {
   const mentorId = "a2ui-test-mentor";
   try {
     const mentorReady = runtime.waitForMentor(1_000);
-    const next = request(address, `/api/mentor/next?mentorId=${mentorId}&takeover=1`);
+    await request(address, "/api/mentor/register", {
+      method: "POST",
+      body: JSON.stringify({ mentorId, takeover: true }),
+    });
+    await request(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
     await mentorReady;
+    const next = request(address, `/api/mentor/next?mentorId=${mentorId}`);
 
     const messages = [
       {
@@ -93,17 +98,85 @@ test("server persists real A2UI v0.9 surface messages", async () => {
   }
 });
 
-test("mentor readiness resolves only after an adapter claims the lease", async () => {
+test("mentor readiness resolves only after provider-qualified handshake", async () => {
   const { root, runtime, address } = await fixture();
   try {
+    const mentorId = "ready-mentor";
     const ready = runtime.waitForMentor(1_000);
-    const next = request(address, "/api/mentor/next?mentorId=ready-mentor&takeover=1");
-    assert.equal(await ready, "ready-mentor");
-    await request(address, "/api/message", {
+    await request(address, "/api/mentor/register", {
       method: "POST",
-      body: JSON.stringify({ text: "wake" }),
+      body: JSON.stringify({ mentorId, takeover: true }),
     });
-    await next;
+    const resolvedBeforeReady = await Promise.race([
+      ready.then(() => true),
+      new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), 30)),
+    ]);
+    assert.equal(resolvedBeforeReady, false);
+    await request(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
+    assert.equal(await ready, mentorId);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("interrupt delegates to the active adapter and clears mentor readiness", async () => {
+  const { root, runtime, address } = await fixture();
+  try {
+    const mentorId = "interrupt-mentor";
+    await request(address, "/api/mentor/register", {
+      method: "POST",
+      body: JSON.stringify({ mentorId, takeover: true }),
+    });
+    await request(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
+    let interrupted = 0;
+    runtime.setInterruptHandler(async () => {
+      interrupted += 1;
+      return true;
+    });
+
+    const response = await request(address, "/api/interrupt", { method: "POST", body: "{}" });
+    assert.equal(response.response.status, 202);
+    assert.equal(interrupted, 1);
+    assert.equal((await request(address, "/api/session")).body.mentorAttached, false);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("malformed A2UI graphs are rejected without replacing the last good canvas", async () => {
+  const { root, runtime, address } = await fixture();
+  const mentorId = "graph-mentor";
+  try {
+    await request(address, "/api/mentor/register", {
+      method: "POST",
+      body: JSON.stringify({ mentorId, takeover: true }),
+    });
+    await request(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
+    const before = (await request(address, "/api/session")).body.canvas;
+    const rejected = await request(address, "/api/a2ui", {
+      method: "POST",
+      body: JSON.stringify({
+        focus: "work",
+        messages: [
+          {
+            version: "v0.9",
+            createSurface: { surfaceId: "cycle", catalogId: "urn:learn-anything:catalog:v1" },
+          },
+          {
+            version: "v0.9",
+            updateComponents: {
+              surfaceId: "cycle",
+              components: [{ id: "root", component: "Column", children: ["root"] }],
+            },
+          },
+        ],
+      }),
+    }, mentorId);
+    assert.equal(rejected.response.status, 400);
+    assert.match(rejected.body.error, /cycle/i);
+    assert.deepEqual((await request(address, "/api/session")).body.canvas, before);
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });

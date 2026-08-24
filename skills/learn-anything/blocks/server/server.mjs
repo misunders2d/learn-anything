@@ -3,12 +3,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCode, availableRunners } from "../execution/host-runner.mjs";
+import { runSelectedCode, selectedRunners } from "../execution/runner.mjs";
 import {
+  A2UI_VERSION,
   activeSurface,
   applyA2uiMessages,
   canvasEventValue,
-  canvasFromStage,
   surfaceComponents,
 } from "../a2ui/state.mjs";
 
@@ -91,36 +91,36 @@ function canvasComponent(canvas, componentId) {
 
 function updateCanvasFromAction(canvas, action) {
   const component = canvasComponent(canvas, action.componentId);
-  if (!component) return false;
+  if (!component) return null;
   if (action.action === "quiz_answer" && component.component === "Quiz") {
     component.selectedOptionId = action.optionId;
-    return true;
+    return component;
   }
   if (action.action === "checklist_toggle" && component.component === "Checklist" && Array.isArray(component.items)) {
     const item = component.items.find((candidate) => candidate.id === action.itemId);
-    if (!item) return false;
+    if (!item) return null;
     item.done = Boolean(action.done);
-    return true;
+    return component;
   }
   if (action.action === "code_change" && component.component === "Code" && typeof action.code === "string") {
     if (Buffer.byteLength(action.code) > 100_000) throw httpError("Code must be no larger than 100 KB.", 413);
     component.value = action.code;
-    return true;
+    return component;
   }
   if (action.action === "parameter_change" && component.component === "Params" && Array.isArray(component.controls)) {
     const control = component.controls.find((candidate) => candidate.id === action.controlId);
-    if (!control || !Number.isFinite(action.value)) return false;
+    if (!control || !Number.isFinite(action.value)) return null;
     control.value = Math.min(Number(control.max), Math.max(Number(control.min), action.value));
-    return true;
+    return component;
   }
-  return false;
+  return null;
 }
 
 function updateEditorValue(canvas, componentId, code) {
   const component = canvasComponent(canvas, componentId);
-  if (!component || component.component !== "Code") return false;
+  if (!component || component.component !== "Code") return null;
   component.value = code;
-  return true;
+  return component;
 }
 
 function runnableComponent(canvas, componentId) {
@@ -142,6 +142,33 @@ function hydrateRunResults(canvas, results = {}) {
   return canvas;
 }
 
+function componentDelta(canvas, component) {
+  const surface = activeSurface(canvas);
+  return {
+    focus: canvas.focus,
+    activeSurfaceId: canvas.activeSurfaceId,
+    messages: [{
+      version: A2UI_VERSION,
+      updateComponents: { surfaceId: surface.id, components: [component] },
+    }],
+  };
+}
+
+
+function hydratedMessages(canvas, messages) {
+  return messages.map((message) => {
+    if (!message?.updateComponents) return message;
+    const surface = canvas.surfaces?.[message.updateComponents.surfaceId];
+    if (!surface) return message;
+    return {
+      ...message,
+      updateComponents: {
+        ...message.updateComponents,
+        components: message.updateComponents.components.map((component) => surface.components?.[component.id] || component),
+      },
+    };
+  });
+}
 export async function createLearnAnythingServer({
   sessionDir,
   kitRoot = defaultKitRoot,
@@ -154,11 +181,8 @@ export async function createLearnAnythingServer({
   const exercisesDir = join(resolvedSessionDir, "exercises");
   const webRoot = resolve(kitRoot, "blocks/web/dist");
   let session = await readSession(sessionPath);
-  if (!session.canvas) {
-    session.canvas = canvasFromStage(session.stage, session.topic);
-    delete session.stage;
-    session.schemaVersion = 2;
-    await atomicSession(sessionPath, session);
+  if (session.schemaVersion !== 3 || session.assembly?.schemaVersion !== 1 || !session.canvas) {
+    throw new Error("Session requires explicit migration. Run learn-anything create for this topic with --migrate.");
   }
   if (!session.security?.accessToken) {
     session.security = { ...(session.security || {}), accessToken: randomBytes(32).toString("base64url") };
@@ -171,9 +195,11 @@ export async function createLearnAnythingServer({
   const mentorReadyWaiters = new Set();
   const partialMessages = new Map();
   let activeMentorId = null;
+  let activeMentorReady = false;
   let activeMentorSource = null;
   let mentorState = "idle";
   let runTail = Promise.resolve();
+  let interruptHandler = null;
   let pendingRuns = 0;
   let persistTail = Promise.resolve();
 
@@ -189,16 +215,34 @@ export async function createLearnAnythingServer({
 
   function claimMentor(mentorId, takeover = false) {
     if (!mentorId) throw httpError("mentorId is required.", 400);
-    if (!activeMentorId) activeMentorId = mentorId;
-    else if (activeMentorId !== mentorId) {
+    if (!activeMentorId) {
+      activeMentorId = mentorId;
+      activeMentorReady = false;
+    } else if (activeMentorId !== mentorId) {
       if (!takeover) throw httpError("Another mentor owns this workspace.", 409);
       activeMentorId = mentorId;
+      activeMentorReady = false;
       for (const waiter of [...mentorWaiters]) {
         if (waiter.mentorId !== mentorId) waiter.finish(STALE_MENTOR);
       }
     }
+  }
+
+  function markMentorReady(mentorId) {
+    if (!mentorId || mentorId !== activeMentorId) throw httpError("Mentor lease is not active.", 409);
+    activeMentorReady = true;
     for (const finish of [...mentorReadyWaiters]) finish(activeMentorId);
     broadcast(agEvent("CUSTOM", { name: "mentor_presence", value: { attached: true } }));
+  }
+
+  function markMentorUnavailable(reason = "unavailable") {
+    activeMentorReady = false;
+    activeMentorId = null;
+    activeMentorSource = null;
+    partialMessages.clear();
+    setMentorState(mentorQueue.length ? "waiting" : "idle");
+    for (const waiter of [...mentorWaiters]) waiter.finish(STALE_MENTOR);
+    broadcast(agEvent("CUSTOM", { name: "mentor_presence", value: { attached: false, reason } }));
   }
 
   function requireActiveMentor(request) {
@@ -208,7 +252,7 @@ export async function createLearnAnythingServer({
   }
 
   function waitForMentor(timeoutMs = 10_000) {
-    if (activeMentorId) return Promise.resolve(activeMentorId);
+    if (activeMentorId && activeMentorReady) return Promise.resolve(activeMentorId);
     return new Promise((resolvePromise, reject) => {
       const finish = (mentorId) => {
         clearTimeout(timer);
@@ -374,8 +418,8 @@ export async function createLearnAnythingServer({
           topic: session.topic,
           profile: session.assembly?.profile,
           degraded: session.assembly?.degraded || [],
-          runners: availableRunners(),
-          mentorAttached: Boolean(activeMentorId),
+          runners: selectedRunners(session.assembly?.execution),
+          mentorAttached: Boolean(activeMentorId && activeMentorReady),
         });
         return;
       }
@@ -389,8 +433,7 @@ export async function createLearnAnythingServer({
           canvas: session.canvas,
           progress: session.progress,
           assembly: session.assembly,
-          mentorState,
-          mentorAttached: Boolean(activeMentorId),
+          mentorAttached: Boolean(activeMentorId && activeMentorReady),
         });
         return;
       }
@@ -409,8 +452,7 @@ export async function createLearnAnythingServer({
             canvas: canvasEventValue(session.canvas),
             progress: session.progress,
             assembly: session.assembly,
-            mentorState,
-            mentorAttached: Boolean(activeMentorId),
+            mentorAttached: Boolean(activeMentorId && activeMentorReady),
           },
         }))}\n\n`);
         clients.add(response);
@@ -448,12 +490,26 @@ export async function createLearnAnythingServer({
         sendJson(response, 202, { accepted: true, messageId: message.id });
         return;
       }
+      if (request.method === "POST" && pathname === "/api/mentor/register") {
+        const body = await readBody(request);
+        claimMentor(body.mentorId, body.takeover === true);
+        sendJson(response, 202, { accepted: true, mentorId: activeMentorId });
+        return;
+      }
 
+      if (request.method === "POST" && pathname === "/api/mentor/ready") {
+        markMentorReady(request.headers["x-learn-anything-mentor"]);
+        sendJson(response, 202, { accepted: true });
+        return;
+      }
       if (request.method === "GET" && pathname === "/api/mentor/next") {
         const mentorId = url.searchParams.get("mentorId");
-        claimMentor(mentorId, url.searchParams.get("takeover") === "1");
+        if (!activeMentorId || activeMentorId !== mentorId || url.searchParams.get("takeover") === "1") {
+          claimMentor(mentorId, url.searchParams.get("takeover") === "1");
+        }
         const item = await nextMentorMessage(mentorId);
         if (item === STALE_MENTOR) throw httpError("Mentor lease was replaced.", 409);
+
         if (!item) {
           response.writeHead(204, { "cache-control": "no-store" });
           response.end();
@@ -461,6 +517,23 @@ export async function createLearnAnythingServer({
           activeMentorSource = item.type === "user_message" ? item.message?.source || "chat" : null;
           sendJson(response, 200, item);
         }
+        return;
+      }
+      if (request.method === "POST" && pathname === "/api/interrupt") {
+        if (mentorState === "waiting" && mentorQueue.length) {
+          const queuedIndex = mentorQueue.findLastIndex((item) => item?.type === "user_message");
+          if (queuedIndex >= 0) mentorQueue.splice(queuedIndex, 1);
+          setMentorState("idle");
+          broadcast(agEvent("RUN_ERROR", { message: "Queued mentor request cancelled.", code: "CANCELLED" }));
+          sendJson(response, 202, { accepted: true, queued: true });
+          return;
+        }
+        if (!activeMentorReady || typeof interruptHandler !== "function") throw httpError("Mentor cannot be interrupted.", 409);
+        const interrupted = await interruptHandler();
+        if (!interrupted) throw httpError("No active mentor turn to interrupt.", 409);
+        markMentorUnavailable("interrupt");
+        broadcast(agEvent("RUN_ERROR", { message: "Mentor response interrupted.", code: "INTERRUPTED" }));
+        sendJson(response, 202, { accepted: true });
         return;
       }
 
@@ -483,7 +556,14 @@ export async function createLearnAnythingServer({
           ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
           : { ...session.canvas, focus: payload.focus };
         await persist();
-        broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
+        broadcast(agEvent("CUSTOM", {
+          name: "a2ui",
+          value: {
+            focus: session.canvas.focus,
+            activeSurfaceId: session.canvas.activeSurfaceId,
+            messages: hydratedMessages(session.canvas, payload.messages),
+          },
+        }));
         setMentorState("idle");
         sendJson(response, 202, { accepted: true, surfaceId: session.canvas.activeSurfaceId || null });
         return;
@@ -491,9 +571,10 @@ export async function createLearnAnythingServer({
 
       if (request.method === "POST" && pathname === "/api/action") {
         const action = await readBody(request);
-        if (updateCanvasFromAction(session.canvas, action)) {
+        const changedComponent = updateCanvasFromAction(session.canvas, action);
+        if (changedComponent) {
           await persist();
-          broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
+          broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, changedComponent) }));
         }
         if (action.action === "code_change") {
           sendJson(response, 202, { accepted: true, persisted: true });
@@ -519,9 +600,10 @@ export async function createLearnAnythingServer({
         const resultKey = runResultKey(session.canvas, body.componentId);
         if (!language || typeof language !== "string") throw httpError("A learner-facing language is required.", 400);
         if (component && component.runnable === false) throw httpError("This activity is not runnable.", 400);
-        if (updateEditorValue(session.canvas, body.componentId, body.code)) {
+        const editedComponent = updateEditorValue(session.canvas, body.componentId, body.code);
+        if (editedComponent) {
           await persist();
-          broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
+          broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, editedComponent) }));
         }
         const toolCallId = randomUUID();
         const runId = randomUUID();
@@ -530,7 +612,8 @@ export async function createLearnAnythingServer({
         broadcast(agEvent("TOOL_CALL_ARGS", { toolCallId, delta: JSON.stringify({ language }) }));
         broadcast(agEvent("TOOL_CALL_END", { toolCallId }));
         try {
-          const result = await scheduleRun(() => runCode({
+          const result = await scheduleRun(() => runSelectedCode({
+            execution: session.assembly?.execution,
             language,
             runner,
             code: body.code,
@@ -553,7 +636,7 @@ export async function createLearnAnythingServer({
             const activeComponent = resultKey === runResultKey(session.canvas, body.componentId) ? runnableComponent(session.canvas, body.componentId) : null;
             if (activeComponent) activeComponent.lastResult = result;
             await persist();
-            broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
+            if (activeComponent) broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, activeComponent) }));
           }
           enqueueMentor({
             type: "execution_result",
@@ -571,7 +654,7 @@ export async function createLearnAnythingServer({
             const activeComponent = resultKey === runResultKey(session.canvas, body.componentId) ? runnableComponent(session.canvas, body.componentId) : null;
             if (activeComponent) activeComponent.lastResult = failedResult;
             await persist();
-            broadcast(agEvent("CUSTOM", { name: "a2ui", value: canvasEventValue(session.canvas) }));
+            if (activeComponent) broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, activeComponent) }));
           }
           broadcast(agEvent("RUN_ERROR", { message: error.message, code: "EXECUTION_ERROR" }));
           enqueueMentor({
@@ -604,6 +687,10 @@ export async function createLearnAnythingServer({
     sessionDir: resolvedSessionDir,
     accessToken,
     waitForMentor,
+    markMentorUnavailable,
+    setInterruptHandler(handler) {
+      interruptHandler = typeof handler === "function" ? handler : null;
+    },
     async listen() {
       await new Promise((resolvePromise, reject) => {
         server.once("error", reject);

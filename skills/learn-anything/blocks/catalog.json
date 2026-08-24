@@ -3,6 +3,7 @@
   "blocks": [
     {
       "id": "server.node-sse",
+      "version": 1,
       "kind": "server",
       "path": "blocks/server/server.mjs",
       "requires": ["node>=20"],
@@ -11,6 +12,7 @@
     },
     {
       "id": "web.a2ui-canvas",
+      "version": 1,
       "kind": "frontend",
       "path": "blocks/web/dist",
       "requires": ["built-web-assets"],
@@ -19,46 +21,79 @@
     },
     {
       "id": "adapter.claude-agent-sdk",
+      "version": 1,
       "kind": "mentor-adapter",
       "path": "blocks/adapters/claude-agent-sdk/adapter.mjs",
       "requires": ["claude-agent-sdk-auth", "node>=20"],
       "provides": ["persistent-mentor", "token-streaming", "session-resume", "canvas-tool", "milestone-tool"],
+      "runtime": {
+        "protocolVersion": 1,
+        "runtime": "node",
+        "entry": "blocks/adapters/claude-agent-sdk/adapter.mjs",
+        "persistent": true,
+        "capabilities": { "streaming": true, "interrupt": "process", "resume": true }
+      },
       "smokeCheck": "event mapper tests plus authenticated launch check"
     },
     {
       "id": "adapter.shell-long-poll",
+      "version": 1,
       "kind": "mentor-adapter",
       "path": "scripts/mentor.mjs",
       "requires": ["shell", "node>=20"],
       "provides": ["browser-to-agent-messages", "agent-to-browser-events", "canvas-updates"],
+      "runtime": {
+        "protocolVersion": 1,
+        "persistent": false,
+        "capabilities": { "streaming": false, "interrupt": "none", "resume": false }
+      },
       "degraded": ["no-token-streaming-guarantee", "agent-turn-long-poll"],
       "smokeCheck": "message round trip through /api/mentor/next and /api/mentor/event"
     },
     {
       "id": "adapter.codex-cli",
+      "version": 1,
       "kind": "mentor-adapter",
       "path": "blocks/adapters/codex-cli/adapter.mjs",
       "requires": ["codex-cli-auth", "node>=20"],
       "provides": ["persistent-mentor", "session-resume", "canvas-updates"],
+      "runtime": {
+        "protocolVersion": 1,
+        "runtime": "node",
+        "entry": "blocks/adapters/codex-cli/adapter.mjs",
+        "persistent": true,
+        "capabilities": { "streaming": false, "interrupt": "process", "resume": true }
+      },
       "degraded": ["turn-complete-output"],
       "smokeCheck": "real browser message reaches codex exec and returns mentor text"
     },
     {
+      "id": "execution.container",
+      "version": 1,
+      "kind": "execution",
+      "path": "blocks/execution/container-runner.mjs",
+      "requires": ["docker-or-podman"],
+      "provides": ["code-run", "network-isolation", "read-only-root", "bounded-resources", "process-containment"],
+      "smokeCheck": "run a fixed JavaScript probe in a bounded per-session container"
+    },
+    {
       "id": "execution.host-fixed-runners",
+      "version": 1,
       "kind": "execution",
       "path": "blocks/execution/host-runner.mjs",
       "requires": ["one-supported-toolchain"],
       "provides": ["code-run", "stdout", "stderr", "exit-code"],
-      "degraded": ["host-execution"],
+      "degraded": ["host-execution-full-user-permissions"],
       "smokeCheck": "run JavaScript probe in session exercises directory"
     },
     {
       "id": "execution.sqlite",
+      "version": 1,
       "kind": "execution",
       "path": "blocks/execution/sqlite-runner.mjs",
       "requires": ["python3-with-sqlite"],
       "provides": ["run:sql", "hidden-fixtures", "structured-table-results"],
-      "degraded": ["host-execution"],
+      "degraded": ["host-execution-full-user-permissions"],
       "smokeCheck": "run a pure SQL query against an in-memory seeded fixture"
     }
   ]

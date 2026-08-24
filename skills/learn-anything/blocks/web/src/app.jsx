@@ -11,6 +11,7 @@ import {
 } from "./message-state.mjs";
 import { activeSurface, applyA2uiMessages, resolveDataBinding, surfaceComponents } from "../../a2ui/state.mjs";
 import { indentWithTab } from "./editor-input.mjs";
+import { clearDraft, loadDraft, saveDraft } from "./draft-store.mjs";
 import { connectionIssueFor, resolveFocus, shouldReleaseRescue } from "./workspace-state.mjs";
 
 marked.setOptions({ gfm: true, breaks: true });
@@ -87,7 +88,7 @@ function Markdown({ content, className = "" }) {
 
 function WorkspaceStatus({ connected, mentorAttached, degraded, hasRunnableCode }) {
   const notices = [...new Set((degraded || []).flatMap((item) => {
-    if (item === "host-execution") return hasRunnableCode ? ["code runs on this computer"] : [];
+    if (item === "host-execution-full-user-permissions") return hasRunnableCode ? ["code has full local permissions"] : [];
     if (item === "mentor-output-may-arrive-per-turn" || item === "mentor-output-arrives-after-headless-turn") return ["turn-complete replies"];
     return [item.replaceAll("-", " ")];
   }))];
@@ -100,12 +101,12 @@ function WorkspaceStatus({ connected, mentorAttached, degraded, hasRunnableCode 
   );
 }
 
-function ChatComposer({ draft, setDraft, sending, sendError, mentorState, onSend, inputRef, centered = false }) {
+function ChatComposer({ draft, setDraft, sending, sendError, mentorState, onSend, onInterrupt, inputRef, centered = false }) {
   return (
     <form onSubmit={(event) => { event.preventDefault(); void onSend(); }} className={`chat-composer ${centered ? "chat-composer-centered" : ""}`}>
       <div className="mentor-presence" role="status" aria-live="polite">
-        {mentorState === "waiting" && <><span className="thinking-dot" />Thinking about your question…</>}
-        {mentorState === "responding" && <><span className="thinking-dot" />Writing a response…</>}
+        {mentorState === "waiting" && <><span className="thinking-dot" />Thinking about your question… <button type="button" className="mentor-stop" onClick={onInterrupt}>Stop</button></>}
+        {mentorState === "responding" && <><span className="thinking-dot" />Writing a response… <button type="button" className="mentor-stop" onClick={onInterrupt}>Stop</button></>}
       </div>
       <div className="composer-control">
         <textarea name="mentor-question" ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void onSend(); } }} rows={centered ? 3 : 2} placeholder={centered ? "What would you like to understand, build, or practice?" : "Ask a follow-up or share what you tried…"} />
@@ -187,13 +188,34 @@ function DataTable({ columns = [], rows = [], caption }) {
 }
 
 function CodeBlock({ component, onContext }) {
-  const [code, setCode] = useState(component.value || "");
+  const draftKey = `code:${component._surfaceId || "surface"}:${component.id || "editor"}`;
+  const [code, setCode] = useState(() => loadDraft(window.localStorage, draftKey, component.value || ""));
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(component.lastResult || null);
   const saveTimer = useRef(null);
   const resultRef = useRef(null);
 
-  useEffect(() => setCode(component.value || ""), [component.value]);
+  function scheduleSave(value) {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      if (!component.id) return;
+      try {
+        await api("/api/action", {
+          method: "POST",
+          body: JSON.stringify({ action: "code_change", componentId: component.id, code: value }),
+        });
+        clearDraft(window.localStorage, draftKey, value);
+      } catch (error) {
+        setResult({ error: `Could not save editor state: ${error.message}` });
+      }
+    }, 400);
+  }
+
+  useEffect(() => {
+    const local = loadDraft(window.localStorage, draftKey, null);
+    setCode(local ?? component.value ?? "");
+    if (local !== null && local !== component.value) scheduleSave(local);
+  }, [component.value, draftKey]);
   useEffect(() => setResult(component.lastResult || null), [component.lastResult]);
   useEffect(() => {
     if (result) requestAnimationFrame(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
@@ -202,14 +224,8 @@ function CodeBlock({ component, onContext }) {
 
   function updateCode(value) {
     setCode(value);
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if (!component.id) return;
-      api("/api/action", {
-        method: "POST",
-        body: JSON.stringify({ action: "code_change", componentId: component.id, code: value }),
-      }).catch((error) => setResult({ error: `Could not save editor state: ${error.message}` }));
-    }, 400);
+    saveDraft(window.localStorage, draftKey, value);
+    scheduleSave(value);
   }
 
   async function run() {
@@ -334,7 +350,7 @@ function A2uiNode({ componentId, surface, onContext, replyFor }) {
     const children = Array.isArray(component.children) ? component.children : [];
     return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} replyFor={replyFor} />)}</div>;
   }
-  const normalized = { ...component, type: String(component.component || "unknown").toLowerCase() };
+  const normalized = { ...component, _surfaceId: surface.id, type: String(component.component || "unknown").toLowerCase() };
   const label = component.title || component.question || String(component.component || "component").toLowerCase();
   const reply = replyFor(component.id);
   return (
@@ -372,7 +388,8 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [mentorAttached, setMentorAttached] = useState(false);
   const [connectionIssue, setConnectionIssue] = useState(null);
-  const [draft, setDraft] = useState("");
+  const [chatDraft, setChatDraft] = useState(() => loadDraft(window.localStorage, "chat", ""));
+  const [workDraft, setWorkDraft] = useState(() => loadDraft(window.localStorage, "work", ""));
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const [workContext, setWorkContext] = useState(null);
@@ -490,8 +507,15 @@ function App() {
     };
   }, []);
 
+  function updateComposerDraft(source, value) {
+    if (source === "work") setWorkDraft(value);
+    else setChatDraft(value);
+    saveDraft(window.localStorage, source, value);
+  }
+
   async function sendMessage(source = "chat") {
-    const text = draft.trim();
+    const currentDraft = source === "work" ? workDraft : chatDraft;
+    const text = currentDraft.trim();
     if (!text || sending) return;
     setSending(true);
     setSendError("");
@@ -505,8 +529,11 @@ function App() {
           context: source === "work" ? workContext : null,
         }),
       });
-      setDraft("");
-      if (source === "work") setWorkContext(null);
+      clearDraft(window.localStorage, source, currentDraft);
+      if (source === "work") {
+        setWorkDraft("");
+        setWorkContext(null);
+      } else setChatDraft("");
       setMentorState("waiting");
     } catch (error) {
       const issue = connectionIssueFor(error);
@@ -517,6 +544,15 @@ function App() {
       setConnectionIssue(issue);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function interruptMentor() {
+    try {
+      await api("/api/interrupt", { method: "POST", body: "{}" });
+      setMentorState("idle");
+    } catch (error) {
+      setSendError(error.message);
     }
   }
 
@@ -538,7 +574,7 @@ function App() {
               <h1>{topic}</h1>
               <p>Start anywhere. Ask a basic question, name something confusing, or describe what you want to make. The lesson will adapt as you go.</p>
             </div>
-            <ChatComposer draft={draft} setDraft={setDraft} sending={sending} sendError={sendError} mentorState={mentorState} onSend={() => sendMessage("chat")} inputRef={composerRef} centered />
+            <ChatComposer draft={chatDraft} setDraft={(value) => updateComposerDraft("chat", value)} sending={sending} sendError={sendError} mentorState={mentorState} onSend={() => sendMessage("chat")} onInterrupt={interruptMentor} inputRef={composerRef} centered />
           </div>
         ) : (
           <>
@@ -546,7 +582,7 @@ function App() {
               {messages.map((message) => <Message key={message.id} message={message} />)}
               <div ref={messageEndRef} />
             </div>
-            <ChatComposer draft={draft} setDraft={setDraft} sending={sending} sendError={sendError} mentorState={mentorState} onSend={() => sendMessage("chat")} inputRef={composerRef} />
+            <ChatComposer draft={chatDraft} setDraft={(value) => updateComposerDraft("chat", value)} sending={sending} sendError={sendError} mentorState={mentorState} onSend={() => sendMessage("chat")} onInterrupt={interruptMentor} inputRef={composerRef} />
           </>
         )}
       </section>
@@ -572,12 +608,12 @@ function App() {
         <form aria-label="Ask mentor from work" onSubmit={(event) => { event.preventDefault(); void sendMessage("work"); }} className="work-question-bar">
           <div className="work-question-inner">
             <div className="mentor-presence" aria-live="polite">
-              {mentorState === "waiting" && <><span className="thinking-dot" />Thinking about this…</>}
-              {mentorState === "responding" && <><span className="thinking-dot" />Adding guidance…</>}
+              {mentorState === "waiting" && <><span className="thinking-dot" />Thinking about this… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}
+              {mentorState === "responding" && <><span className="thinking-dot" />Adding guidance… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}
             </div>
             <div className="work-question-control">
-              <textarea name="work-question" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage("work"); } }} rows="1" aria-label="Question about this activity" placeholder="Ask about this activity…" className="work-question-input" />
-              <button type="submit" disabled={!draft.trim() || sending}>Ask</button>
+              <textarea name="work-question" value={workDraft} onChange={(event) => updateComposerDraft("work", event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage("work"); } }} rows="1" aria-label="Question about this activity" placeholder="Ask about this activity…" className="work-question-input" />
+              <button type="submit" disabled={!workDraft.trim() || sending}>Ask</button>
             </div>
             {workContext && <div className="context-chip">
               <span>About {workContext.label}{workContext.quote ? `: “${workContext.quote.slice(0, 80)}${workContext.quote.length > 80 ? "…" : ""}”` : ""}</span>

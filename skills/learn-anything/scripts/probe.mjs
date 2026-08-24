@@ -11,10 +11,10 @@ export function commandPath(command, platform = process.platform) {
   return result.stdout.trim().split(/\r?\n/, 1)[0] || null;
 }
 
-function browserOpener(platform) {
-  if (platform === "darwin") return commandPath("open", platform);
-  if (platform === "win32") return commandPath("cmd", platform);
-  return commandPath("xdg-open", platform) ?? commandPath("gio", platform);
+function browserOpener(platform, resolveCommand = commandPath) {
+  if (platform === "darwin") return resolveCommand("open", platform);
+  if (platform === "win32") return resolveCommand("cmd", platform);
+  return resolveCommand("xdg-open", platform) ?? resolveCommand("gio", platform);
 }
 
 function harnessHint(env) {
@@ -26,13 +26,17 @@ function harnessHint(env) {
   return "unknown";
 }
 
-export function probeCapabilities({ env = process.env, platform = process.platform } = {}) {
+export function probeCapabilities({
+  env = process.env,
+  platform = process.platform,
+  resolveCommand = commandPath,
+} = {}) {
   const commands = Object.fromEntries(
-    ["node", "npm", "codex", "docker", "podman", "python3", "python", "py", "cargo", "rustc", "cc", "gcc", "clang"]
-      .map((command) => [command, commandPath(command, platform)]),
+    ["node", "npm", "claude", "codex", "docker", "podman", "python3", "python", "py", "cargo", "rustc", "cc", "gcc", "clang"]
+      .map((command) => [command, resolveCommand(command, platform)]),
   );
   const containerRuntime = commands.docker ? "docker" : commands.podman ? "podman" : null;
-  const opener = browserOpener(platform);
+  const opener = browserOpener(platform, resolveCommand);
   const languages = {
     javascript: Boolean(commands.node),
     python: Boolean(commands.python3 || commands.python || commands.py),
@@ -42,7 +46,6 @@ export function probeCapabilities({ env = process.env, platform = process.platfo
   };
 
   const warnings = [];
-  if (!containerRuntime) warnings.push("No Docker or Podman detected; execution will use disclosed host fallback.");
   if (!opener) warnings.push("No browser opener detected; launch will print URL instead of opening it.");
   if (!Object.values(languages).some(Boolean)) warnings.push("No supported code runner detected.");
 

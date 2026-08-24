@@ -193,6 +193,8 @@ async function assertView(browser, expected, { rescued = false, mobile = false }
     const primaryOpacity = expected === "chat" ? state.mentorOpacity : state.stageOpacity;
     const secondaryOpacity = expected === "chat" ? state.stageOpacity : state.mentorOpacity;
     return state.workspace
+      && state.bodyFocus === (rescued ? "work" : expected)
+      && state.rescueState === (rescued ? "1" : "")
       && primaryWidth > state.viewport * 0.9
       && secondaryWidth < 10
       && primaryOpacity === "1"
@@ -264,20 +266,37 @@ try {
   const address = await runtime.listen();
   listening = true;
   const mentorId = "browser-acceptance-mentor";
+  let interruptCount = 0;
+  runtime.setInterruptHandler(async () => {
+    interruptCount += 1;
+    return true;
+  });
+  await api(address, "/api/mentor/register", {
+    method: "POST",
+    body: JSON.stringify({ mentorId, takeover: true }),
+  });
+  await api(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
 
   browser = new ChromeHarness(await browserBinary(), profile, address.launchUrl);
   await browser.start();
   await waitFor(() => browser.evaluate("document.body.dataset.focus === 'chat'"), "initial chat focus");
-  await waitFor(() => browser.evaluate("document.querySelector('.workspace-status')?.innerText.includes('Mentor unavailable')"), "initial workspace connection");
+  await waitFor(() => browser.evaluate("document.querySelector('.workspace-status')?.innerText.includes('Mentor ready')"), "qualified mentor connection");
   await assertView(browser, "chat");
   record("initial-chat-visible");
-  assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('Mentor unavailable')"));
+  assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('Mentor ready')"));
   assert.equal(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('mentor-output-may-arrive-per-turn')"), false);
   assert.equal(await browser.evaluate("Boolean(document.querySelector('.console-output'))"), false);
   record("learner-facing-capability-labels");
   record("non-code-stage-hides-console");
 
-  const mentorPoll = fetch(`${address.url}/api/mentor/next?${new URLSearchParams({ token: address.accessToken, mentorId, takeover: "1" })}`)
+  const unsentQuestion = "draft survives refresh";
+  await setComposer(browser, unsentQuestion);
+  await browser.call("Page.reload", { ignoreCache: true });
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.workspace'))"), "workspace after draft refresh");
+  assert.equal(await browser.evaluate("document.querySelector('.mentor-pane textarea').value"), unsentQuestion);
+  record("unsent-question-draft-restored");
+
+  const mentorPoll = fetch(`${address.url}/api/mentor/next?${new URLSearchParams({ token: address.accessToken, mentorId })}`)
     .then(async (response) => ({ response, body: await response.json() }));
   const firstRequest = "Teach me Rust from scratch";
   await setComposer(browser, firstRequest);
@@ -386,6 +405,12 @@ try {
   record("component-anchored-mentor-reply");
 
   await setEditor(browser, code);
+  await browser.call("Page.reload", { ignoreCache: true });
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.workspace'))"), "workspace after immediate editor refresh");
+  await assertView(browser, "work");
+  await waitForEditor(browser);
+  assert.equal(await browser.evaluate(editorValueExpression()), code);
+  record("immediate-editor-draft-restored");
   await new Promise((resolve) => setTimeout(resolve, 650));
   const saved = await api(address, "/api/session");
   assert.equal(sessionComponent(saved, "browser-code").value, code);
@@ -617,6 +642,16 @@ try {
   await waitFor(() => browser.evaluate("Boolean(document.querySelector('.workspace')) && !document.body.dataset.crashed"), "browser-shell crash recovery", 12_000);
   await assertView(browser, "work");
   record("browser-owned-rescue-recovers-dead-react-root");
+
+  await api(address, "/api/mentor/event", {
+    method: "POST",
+    body: JSON.stringify({ type: "RUN_STARTED", threadId: "browser-acceptance", runId: "interrupt-check" }),
+  }, mentorId);
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.mentor-stop'))"), "mentor interrupt control");
+  await browser.evaluate("document.querySelector('.mentor-stop').click()");
+  await waitFor(() => interruptCount === 1, "mentor interrupt delivery");
+  assert.equal((await api(address, "/api/session")).mentorAttached, false);
+  record("mentor-interrupt-control");
 
   await browser.evaluate(`(() => {
     sessionStorage.setItem('learn-anything-token', 'stale-session-token');

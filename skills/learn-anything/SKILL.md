@@ -29,22 +29,29 @@ Use the bundled browser shell as a visual system, not as a generic dashboard tem
 4. Choose learning root:
    - Current project goal: `<project-root>/.learnings/<topic-slug>/`.
    - General topic: `~/learnings/<topic-slug>/`.
-5. Construct or resume:
+5. Choose execution infrastructure for the current activity and machine:
+   - Prefer an existing harness sandbox, browser-native execution, or installed language toolchain that satisfies the lesson.
+   - Install missing lightweight dependencies in the project or user scope when that is the least invasive suitable option.
+   - Use `--execution container` only when process isolation is materially needed and Docker or Podman is already available or the learner explicitly approves its system installation.
+   - Default to `--execution host` for trusted learner code. Fixed commands prevent browser-supplied shell injection, but learner programs retain the current user's local permissions; disclose that when runnable code appears.
+   - Never treat missing Docker or Podman as a failure or degradation by itself. Ask before privileged or system-wide installation.
+6. Construct or resume:
 
    ```bash
-   node <kit-root>/bin/learn-anything.mjs create "<topic>" --root "<project-root>" --profile <profile-id> --json
+   node <kit-root>/bin/learn-anything.mjs create "<topic>" --root "<project-root>" --profile <profile-id> --execution <host|container> --json
    ```
 
-6. Review returned capability warnings. Never hide host-execution or non-streaming degradation.
-7. Launch server in a supervised background process:
+7. Review returned capability warnings. Never hide the permissions of the selected execution mode or non-streaming degradation.
+8. Launch server in a supervised background process:
 
    ```bash
    node <kit-root>/bin/learn-anything.mjs start --session "<session-dir>" --open
    ```
 
-8. Capture `url`, `launchUrl`, and `accessToken` from start output. Open only `launchUrl`. Verify `/healthz` before telling learner workspace is ready. Never expose the token to remote pages or lesson content.
-9. `start` automatically attaches the bundled Claude or Codex mentor. Require `mentorAttached: true`; normal launch fails instead of opening an unstaffed workspace. `--no-mentor` is explicit manual/test mode only.
-10. Keep browser interaction primary after launch. Persist milestone notes and update the A2UI canvas when the lesson needs a different interaction.
+9. Capture `url`, `launchUrl`, and `accessToken` from start output. Open only `launchUrl`. Verify `/healthz` before telling learner workspace is ready. Never expose the token to remote pages or lesson content.
+   If the package reports an incompatible saved manifest or the user deliberately changes adapters or execution modes, rerun `create` with `--migrate`. Never edit `session.json` manually; migration writes a backup and preserves learner state.
+10. `start` resolves the composition's mentor adapter through the agent-agnostic block contract, waits for its provider-qualified readiness signal, and supervises restart/interrupt behavior. Require `mentorAttached: true`; normal launch fails instead of opening an unstaffed workspace. `--no-mentor` is explicit manual/test mode only.
+11. Keep browser interaction primary after launch. Persist milestone notes and update the A2UI canvas when the lesson needs a different interaction.
 
 ## Composition rules
 
@@ -52,9 +59,9 @@ Use the bundled browser shell as a visual system, not as a generic dashboard tem
 - Compose for the current learning activity as well as the host. Choose subject-native primitives and runners from the catalog; do not force every activity through a generic code/terminal surface.
 - Write minimal glue only when no supplied adapter matches current harness.
 - Scope writable paths to learning directory. Treat project source as read-only unless learner explicitly authorizes project edits.
-- Prefer container execution. If unavailable, require disclosed host fallback and fixed language runners; never accept arbitrary browser-provided shell commands.
-- Save chosen blocks and degradation decisions in `session.json` assembly manifest.
-- Run selected block smoke checks before launch.
+- Select execution by lesson need and verified machine capability; no backend is universally preferred. Docker and Podman are optional containment blocks, not prerequisites.
+- Provision the least invasive suitable infrastructure. Prefer project-local or user-scope dependencies; require explicit learner approval before privileged or system-wide installation.
+- Save selected block versions, capability evidence, execution mode, and degradation decisions in `session.json`; revalidate before launch when capabilities change.
 - If browser opener is absent, print URL instead of failing construction.
 - If required Node runtime is absent, stop and state exact installation or alternative-block need.
 
