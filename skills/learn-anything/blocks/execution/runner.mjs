@@ -24,7 +24,7 @@ export function selectExecution(capabilities, { mode = "host" } = {}) {
 
 export function selectedRunners(execution) {
   if (execution?.mode === "container") {
-    return { javascript: true, python: true, rust: true, c: true, sqlite: true };
+    return { javascript: true, python: true, java: true, rust: true, c: true, sqlite: true };
   }
   return availableRunners();
 }

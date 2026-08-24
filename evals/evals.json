@@ -143,6 +143,7 @@
         "The selected composition uses adapter.pi-cli rather than the manual shell-long-poll adapter.",
         "The browser receives a mentor response without another Pi user turn or terminal nudge.",
         "The browser remains the primary learning surface.",
+        "Runnable Java examples expose the Run action and execute through javac/java.",
         "The server stops after the final browser tab closes or the owning agent exits."
       ]
     }

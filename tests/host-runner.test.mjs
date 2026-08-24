@@ -23,6 +23,21 @@ test("JavaScript runner executes fixed command without shell", async () => {
   }
 });
 
+test("Java runner compiles and executes the learner's public class", async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "learn-anything-java-runner-"));
+  try {
+    const result = await runCode({
+      language: "java",
+      code: "public class Hello { public static void main(String[] args) { System.out.println(\"java-runner-ok\"); } }",
+      workDir,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /java-runner-ok/);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
 test("runner rejects arbitrary language and oversized input", async () => {
   const workDir = await mkdtemp(join(tmpdir(), "learn-anything-runner-reject-"));
   try {
@@ -34,7 +49,7 @@ test("runner rejects arbitrary language and oversized input", async () => {
 });
 
 test("runner capability map always exposes supported catalog keys", () => {
-  assert.deepEqual(Object.keys(availableRunners()).sort(), ["c", "javascript", "python", "rust", "sqlite"]);
+  assert.deepEqual(Object.keys(availableRunners()).sort(), ["c", "java", "javascript", "python", "rust", "sqlite"]);
 });
 
 test("SQLite runner keeps setup hidden and returns structured rows", async () => {

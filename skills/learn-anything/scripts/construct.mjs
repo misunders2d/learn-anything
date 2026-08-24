@@ -35,7 +35,7 @@ async function atomicJson(path, value) {
 
 const SESSION_SCHEMA_VERSION = 3;
 const ASSEMBLY_SCHEMA_VERSION = 1;
-const KIT_VERSION = "0.1.4";
+const KIT_VERSION = "0.1.5";
 
 function capabilityFingerprint(capabilities, execution) {
   const stable = {

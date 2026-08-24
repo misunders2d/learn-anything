@@ -1,6 +1,6 @@
 {
   "name": "@misunders2d/learn-anything",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Build adaptive browser learning workspaces for any topic or project",
   "keywords": [
     "agent-skill",

@@ -32,7 +32,7 @@ export function probeCapabilities({
   resolveCommand = commandPath,
 } = {}) {
   const commands = Object.fromEntries(
-    ["node", "npm", "pi", "claude", "codex", "docker", "podman", "python3", "python", "py", "cargo", "rustc", "cc", "gcc", "clang"]
+    ["node", "npm", "pi", "claude", "codex", "docker", "podman", "python3", "python", "py", "java", "javac", "cargo", "rustc", "cc", "gcc", "clang"]
       .map((command) => [command, resolveCommand(command, platform)]),
   );
   const containerRuntime = commands.docker ? "docker" : commands.podman ? "podman" : null;
@@ -42,6 +42,7 @@ export function probeCapabilities({
     python: Boolean(commands.python3 || commands.python || commands.py),
     sql: Boolean(commands.python3 || commands.python || commands.py),
     rust: Boolean(commands.rustc),
+    java: Boolean(commands.java && commands.javac),
     c: Boolean(commands.cc || commands.gcc || commands.clang),
   };
 

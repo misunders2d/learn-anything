@@ -34,6 +34,17 @@ test("container plan uses fixed compile commands for native runners", () => {
 });
 
 
+test("container plan compiles the learner's Java public class", () => {
+  const plan = containerPlan({
+    runtime: "docker",
+    runner: "java",
+    code: "public class Hello { public static void main(String[] args) {} }",
+    workDir: "/tmp/java",
+  });
+  assert.equal(plan.file, "Hello.java");
+  assert.equal(plan.args.at(-1), "javac Hello.java && java Hello");
+});
+
 test("execution selection defaults to available native runners even when a container exists", () => {
   assert.deepEqual(selectExecution({ containerRuntime: "docker" }), {
     mode: "host",

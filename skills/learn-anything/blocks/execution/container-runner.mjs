@@ -10,14 +10,21 @@ const TIMEOUT_MS = 20_000;
 const RUNNERS = {
   javascript: { image: "node:22-alpine", file: "playground.mjs", command: ["node", "playground.mjs"] },
   python: { image: "python:3.13-alpine", file: "playground.py", command: ["python3", "playground.py"] },
+  java: { image: "eclipse-temurin:21-jdk", file: "Main.java", command: ["sh", "-lc", "javac Main.java && java Main"] },
   rust: { image: "rust:1.85-alpine", file: "playground.rs", command: ["sh", "-lc", "rustc playground.rs -o program && ./program"] },
   c: { image: "gcc:14", file: "playground.c", command: ["sh", "-lc", "gcc playground.c -o program && ./program"] },
   sqlite: { image: "python:3.13-alpine", file: "query.sql", command: ["python3", "sql_runner.py"] },
 };
 
-export function containerPlan({ runtime, runner, workDir, uid = process.getuid?.(), gid = process.getgid?.() } = {}) {
-  if (!['docker', 'podman'].includes(runtime)) throw new Error("Container runtime must be docker or podman.");
-  const selected = RUNNERS[runner];
+export function containerPlan({ runtime, runner, code = "", workDir, uid = process.getuid?.(), gid = process.getgid?.() } = {}) {
+  if (!["docker", "podman"].includes(runtime)) throw new Error("Container runtime must be docker or podman.");
+  let selected = RUNNERS[runner];
+  if (runner === "java") {
+    const className = code.match(/\bpublic\s+(?:final\s+)?class\s+([A-Za-z_$][\w$]*)/)?.[1]
+      || code.match(/\bclass\s+([A-Za-z_$][\w$]*)/)?.[1]
+      || "Main";
+    selected = { ...selected, file: `${className}.java`, command: ["sh", "-lc", `javac ${className}.java && java ${className}`] };
+  }
   if (!selected) throw new Error(`Unsupported container runner: ${runner}`);
   const args = [
     "run", "--rm",
@@ -91,7 +98,7 @@ export async function runContainerCode({ runtime, language, runner = language, c
   if (typeof setup !== "string" || Buffer.byteLength(setup) > 100_000) throw new Error("Runner setup must be a string no larger than 100 KB.");
   const safeDir = resolve(workDir);
   await mkdir(safeDir, { recursive: true });
-  const plan = containerPlan({ runtime, runner, workDir: safeDir });
+  const plan = containerPlan({ runtime, runner, code, workDir: safeDir });
   if (runner === "sqlite") {
     await Promise.all([
       writeFile(join(safeDir, "query.sql"), code, "utf8"),

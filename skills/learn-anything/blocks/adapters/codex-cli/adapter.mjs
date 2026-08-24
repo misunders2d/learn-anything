@@ -84,7 +84,7 @@ When creating or updating work, a2ui_jsonl must contain newline-delimited A2UI v
 The root component must be a Column or Row and reference children by id. Supported learning-catalog component names are Markdown, Callout, Code, Table, Passage, Figure, Params, Mermaid, Quiz, and Checklist. Their properties are:
 - Markdown: {"id":"...","component":"Markdown","content":"..."}
 - Callout: {"id":"...","component":"Callout","tone":"info|success|warning","title":"...","content":"..."}
-- Code: {"id":"...","component":"Code","language":"any learner-facing syntax such as sql|python|rust|latex","value":"only the learner-facing artifact","runnable":true,"run":{"runner":"javascript|python|rust|c|sqlite","setup":"optional hidden fixture"}}
+- Code: {"id":"...","component":"Code","language":"any learner-facing syntax such as sql|python|java|rust|latex","value":"only the learner-facing artifact","runnable":true,"run":{"runner":"javascript|python|java|rust|c|sqlite","setup":"optional hidden fixture"}}
 - Table: {"id":"...","component":"Table","caption":"...","columns":["..."],"rows":[["..."]]}
 - Passage: {"id":"...","component":"Passage","text":"...","source":"...","annotations":[{"quote":"...","note":"..."}]}
 - Figure: {"id":"...","component":"Figure","mermaid":"flowchart LR ...","caption":"...","callouts":[{"label":"..."}]}

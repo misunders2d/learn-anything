@@ -23,13 +23,14 @@ export function availableRunners() {
   return {
     javascript: exists("node"),
     python,
+    java: exists("java") && exists("javac"),
     rust: exists("rustc"),
     c: exists("cc") || exists("gcc") || exists("clang"),
     sqlite: python,
   };
 }
 
-function runnerPlan(language, workDir) {
+function runnerPlan(language, workDir, code) {
   const executable = process.platform === "win32" ? "program.exe" : "program";
   const output = join(workDir, executable);
   if (language === "javascript") return { file: "playground.mjs", steps: [["node", ["playground.mjs"]]] };
@@ -37,6 +38,13 @@ function runnerPlan(language, workDir) {
     const step = pythonPlan("playground.py");
     if (!step) throw new Error("Python interpreter not found.");
     return { file: "playground.py", steps: [step] };
+  }
+  if (language === "java") {
+    const className = code.match(/\bpublic\s+(?:final\s+)?class\s+([A-Za-z_$][\w$]*)/)?.[1]
+      || code.match(/\bclass\s+([A-Za-z_$][\w$]*)/)?.[1]
+      || "Main";
+    const file = `${className}.java`;
+    return { file, steps: [["javac", [file]], ["java", ["-cp", workDir, className]]] };
   }
   if (language === "rust") return { file: "playground.rs", steps: [["rustc", ["playground.rs", "-o", output]], [output, []]] };
   if (language === "c") {
@@ -119,7 +127,7 @@ export async function runCode({ language, runner = language, code, setup = "", w
     ]);
     plan = { steps: [step] };
   } else {
-    plan = runnerPlan(runner, safeDir);
+    plan = runnerPlan(runner, safeDir, code);
     await writeFile(join(safeDir, plan.file), code, "utf8");
   }
 
