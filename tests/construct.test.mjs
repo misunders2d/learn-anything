@@ -55,7 +55,7 @@ test("construct creates and resumes without replacing session state", async () =
     assert.match(initial.security.accessToken, /^[A-Za-z0-9_-]{40,}$/);
     assert.equal(initial.schemaVersion, 3);
     assert.equal(initial.assembly.schemaVersion, 1);
-    assert.equal(initial.assembly.blockVersions["web.a2ui-canvas"], 1);
+    assert.equal(initial.assembly.blockVersions["web.a2ui-canvas"], 2);
     assert.equal(initial.assembly.execution.mode, "host");
 
     const second = await constructSession({ topic: "Rust lifetimes", root, env: {}, profile: "portable-shell" });

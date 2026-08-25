@@ -5,7 +5,9 @@ description: >
   practice, understand, or build something while learning it. Use for topics, programming
   languages, repositories, technical concepts, tools, and goal-driven projects such as
   rewriting an application in an unfamiliar language. The skill detects the local harness and
-  machine, composes prefab blocks, launches the workspace, and mentors through the browser.
+  machine, composes prefab blocks, launches the workspace, and mentors through the browser. Do
+  not use for a one-off factual answer or explanation unless the user asks for an interactive
+  learning session, guided practice, or a persistent course workspace.
 ---
 
 # Learn Anything
@@ -80,11 +82,13 @@ Treat browser events as observation, not paperwork. The mentor already receives 
 
 ## Dynamic A2UI canvas
 
-The agent creates and updates the work canvas with actual A2UI v0.9 messages. In shell/manual mode use `node <kit-root>/scripts/mentor.mjs canvas --url <server-url> --token <access-token> --mentor-id <stable-id> --file <payload.json>`. The payload is `{ "focus": "chat|work", "messages": [...] }`; each message is one `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface` envelope with `"version": "v0.9"`. Read `references/stage-catalog.md` for the learning component catalog.
+The agent creates and updates the work canvas with actual A2UI v0.9 messages. In shell/manual mode use `node <kit-root>/scripts/mentor.mjs canvas --url <server-url> --token <access-token> --mentor-id <stable-id> --file <payload.json>`. The payload is `{ "focus": "chat|work", "messages": [...], "continuation": { "kind": "question|action", "text": "..." } }`; each message is one `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface` envelope with `"version": "v0.9"`. Chat requires a direct `question`; work requires a concrete `action`. Read `references/stage-catalog.md` for the learning component catalog.
 
-Drive the whole browser flow with `focus`: use `chat` for broad discussion and debriefing; use `work` when the learner has one clear interactive task. Every work surface keeps the browser-owned compact question composer visible. Text/code selection or **Ask about this** supplies a component anchor and optional excerpt. Answer that clarification beside the targeted component without replacing or leaving the work surface. Anchor execution feedback to its code component when useful. Do not create split views or ask the learner to manage layout. The browser-owned **Ask mentor** rescue control must remain available outside agent-rendered content; preserve active work underneath it.
+Drive the whole browser flow with `focus`: use `chat` for a broad learner question or one genuine question that requires their answer; keep automatic activity feedback and course progression in `work` with one clear next action. Every mentor turn ends with either that visible action or one direct question—never an unexplained pause that requires the learner to type "continue". Every work surface keeps the browser-owned compact question composer visible. Text/code selection or **Ask about this** supplies a component anchor and optional excerpt. Answer that clarification beside the targeted component without replacing or leaving the work surface. Anchor execution feedback to its code component when useful. Do not create split views or ask the learner to manage layout. The browser-owned **Ask mentor** rescue control must remain available outside agent-rendered content; preserve active work underneath it, and expose the same control as **Back to activity** whenever chat hides existing work. If you tell the learner to move, edit, click, choose, or run something, return `focus: "work"` and put that interaction directly after one brief instruction so both fit in the first 1280x800 viewport.
 
 Prefer artifact, action, and feedback in one local surface. Structured results belong beside the artifact that produced them; do not add a global terminal console when a table, targeted diagnostic, annotation, or figure expresses the result more clearly.
+
+Use visuals only for a relationship the learner needs to see. Use `Math` for notation, `Plot` for bounded numeric relationships, and `Params.frames` when a finite control should update bound notation, plots, tables, or figures immediately. Never present an isolated value slider as interactivity, and never use agent-authored formulas, HTML, SVG, or browser JavaScript. Preserve the limits and model caveats in `references/stage-catalog.md` and `references/pedagogy.md`.
 
 ## Resume
 
@@ -98,7 +102,7 @@ Before reporting ready:
 node <kit-root>/bin/learn-anything.mjs smoke --session "<session-dir>"
 ```
 
-Then verify the real selected composition in a browser. Type a learner message and click **Send**; observe waiting/responding status and an actual mentor reply without returning to the terminal. Continue until the mentor creates an A2UI work canvas, ask one question through its compact composer, press Tab in the code editor and confirm it indents without moving focus, run code when present, click **Ask mentor**, and verify chat returns without blanking or losing work. Press Enter and Shift+Enter in the composer, refresh once, and stop the launcher to confirm the workspace server exits. Do not report ready from API calls, DOM injection, unit tests, or visual inspection alone.
+Then verify the real selected composition in a browser. Type a learner message and click **Send**; observe waiting/responding status and an actual mentor reply without returning to the terminal. Continue until the mentor creates an A2UI work canvas, ask one question through its compact composer, press Tab in the code editor and confirm it indents without moving focus, run code when present, click **Ask mentor**, ask about a visible control, and verify the mentor's reply restores that same preserved work surface when it returns `focus: "work"`. Exercise every visible control. If a parameter control is present, drag or keyboard-adjust it, verify that its bound visible artifact changes before a server response, ask what to do next through rescue chat, then confirm the control is visible and still usable after the reply and after refresh. Press Enter and Shift+Enter in the composer, refresh once, and stop the launcher to confirm the workspace server exits. Do not report ready from API calls, DOM injection, unit tests, or visual inspection alone.
 
 Also open one stale or invalid session token. It must show explicit recovery guidance within the browser rather than remaining indefinitely on “Connecting” or “Reconnecting.”
 

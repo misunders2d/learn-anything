@@ -8,6 +8,7 @@ import {
   A2UI_VERSION,
   activeSurface,
   applyA2uiMessages,
+  applyParameterFrame,
   canvasEventValue,
   surfaceComponents,
 } from "../a2ui/state.mjs";
@@ -108,10 +109,10 @@ function updateCanvasFromAction(canvas, action) {
     return component;
   }
   if (action.action === "parameter_change" && component.component === "Params" && Array.isArray(component.controls)) {
-    const control = component.controls.find((candidate) => candidate.id === action.controlId);
-    if (!control || !Number.isFinite(action.value)) return null;
-    control.value = Math.min(Number(control.max), Math.max(Number(control.min), action.value));
-    return component;
+    const next = applyParameterFrame(canvas, action.componentId, action.controlId, action.value);
+    if (!next) return null;
+    Object.assign(canvas, next);
+    return canvasComponent(canvas, action.componentId);
   }
   return null;
 }
@@ -197,6 +198,7 @@ export async function createLearnAnythingServer({
   let activeMentorId = null;
   let activeMentorReady = false;
   let activeMentorSource = null;
+  let activeMentorItemType = null;
   let mentorState = "idle";
   let runTail = Promise.resolve();
   let interruptHandler = null;
@@ -257,6 +259,7 @@ export async function createLearnAnythingServer({
     activeMentorReady = false;
     activeMentorId = null;
     activeMentorSource = null;
+    activeMentorItemType = null;
     partialMessages.clear();
     setMentorState(mentorQueue.length ? "waiting" : "idle");
     for (const waiter of [...mentorWaiters]) waiter.finish(STALE_MENTOR);
@@ -349,6 +352,7 @@ export async function createLearnAnythingServer({
       setMentorState("responding");
     } else if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
       activeMentorSource = null;
+      activeMentorItemType = null;
       if (partialMessages.size === 0) setMentorState(mentorQueue.length ? "waiting" : "idle");
     } else if (event.type === "TEXT_MESSAGE_START") {
       partialMessages.set(event.messageId, {
@@ -376,25 +380,67 @@ export async function createLearnAnythingServer({
         await persist();
         if (pending.role === "assistant") setMentorState("idle");
       }
-    } else if (event.type === "CUSTOM" && event.name === "a2ui" && event.value) {
-      if (activeMentorSource === "work") return;
+    } else if (event.type === "CUSTOM" && event.name === "a2ui") {
       const payload = plainCanvasPayload(event.value);
+      enforceAutomaticActivityFocus(payload);
+      if (activeMentorSource === "work") return preserveInlineWorkContinuation(payload);
       session.canvas = payload.messages.length
         ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
         : { ...session.canvas, focus: payload.focus };
+      session.continuation = payload.continuation;
       await persist();
     } else if (event.type === "CUSTOM" && event.name === "mentor_session" && event.value?.sessionId) {
       session.agentSessionId = event.value.sessionId;
       await persist();
     }
     broadcast(event);
+    return { accepted: true };
   }
 
   function plainCanvasPayload(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw httpError("A2UI payload must be an object.", 400);
     if (!["chat", "work"].includes(value.focus)) throw httpError("A2UI payload focus must be chat or work.", 400);
     if (!Array.isArray(value.messages)) throw httpError("A2UI payload messages must be an array.", 400);
-    return { focus: value.focus, messages: value.messages };
+    const continuation = value.continuation;
+    if (!continuation || typeof continuation !== "object" || Array.isArray(continuation)) throw httpError("A2UI payload requires continuation metadata.", 400);
+    if (!["question", "action"].includes(continuation.kind)) throw httpError("Continuation kind must be question or action.", 400);
+    const text = typeof continuation.text === "string" ? continuation.text.trim() : "";
+    if (!text) throw httpError("Continuation text is required.", 400);
+    if (value.focus === "chat" && continuation.kind !== "question") throw httpError("Chat focus requires a direct learner question.", 400);
+    if (value.focus === "work" && continuation.kind !== "action") throw httpError("Work focus requires a concrete learner action.", 400);
+    const normalized = text.toLocaleLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+    const genericContinuation = /^(?:continue|proceed|next|keep going|go on)(?: (?:with|to|the|this|your|visible|current|activity|lesson|course|work|mentor|guidance|applying))*$/;
+    if (continuation.kind === "question" && (!text.includes("?") || !normalized || genericContinuation.test(normalized))) {
+      throw httpError("Chat continuation must contain a meaningful direct question.", 400);
+    }
+    if (continuation.kind === "action" && (!normalized || genericContinuation.test(normalized))) {
+      throw httpError("Work continuation must name a meaningful concrete action.", 400);
+    }
+    return { focus: value.focus, messages: value.messages, continuation: { kind: continuation.kind, text } };
+  }
+
+  function enforceAutomaticActivityFocus(payload) {
+    if (payload.focus === "chat" && session.canvas?.activeSurfaceId && ["execution_result", "stage_action"].includes(activeMentorItemType)) {
+      throw httpError("Automatic activity feedback must remain in work focus and show the learner's next action.", 400);
+    }
+  }
+
+  async function preserveInlineWorkContinuation(payload) {
+    if (payload.focus !== "work" || payload.continuation.kind !== "action") {
+      throw httpError("Inline work replies must preserve work focus with a concrete action.", 400);
+    }
+    session.continuation = payload.continuation;
+    await persist();
+    broadcast(agEvent("CUSTOM", {
+      name: "a2ui",
+      value: {
+        focus: session.canvas.focus,
+        activeSurfaceId: session.canvas.activeSurfaceId,
+        messages: [],
+        continuation: session.continuation,
+      },
+    }));
+    return { accepted: false, preservedWork: true, continuationUpdated: true, surfaceId: session.canvas?.activeSurfaceId || null };
   }
 
   async function serveStatic(pathname, response) {
@@ -449,6 +495,7 @@ export async function createLearnAnythingServer({
           topic: session.topic,
           transcript: session.transcript,
           canvas: session.canvas,
+          continuation: session.continuation || null,
           progress: session.progress,
           assembly: session.assembly,
           mentorAttached: Boolean(activeMentorId && activeMentorReady),
@@ -468,6 +515,7 @@ export async function createLearnAnythingServer({
             topic: session.topic,
             transcript: session.transcript,
             canvas: canvasEventValue(session.canvas),
+            continuation: session.continuation || null,
             progress: session.progress,
             assembly: session.assembly,
             mentorAttached: Boolean(activeMentorId && activeMentorReady),
@@ -536,6 +584,7 @@ export async function createLearnAnythingServer({
           response.end();
         } else {
           activeMentorSource = item.type === "user_message" ? item.message?.source || "chat" : null;
+          activeMentorItemType = item.type || null;
           sendJson(response, 200, item);
         }
         return;
@@ -561,21 +610,28 @@ export async function createLearnAnythingServer({
       if (request.method === "POST" && pathname === "/api/mentor/event") {
         requireActiveMentor(request);
         const event = await readBody(request);
-        await applyMentorEvent(event);
-        sendJson(response, 202, { accepted: true });
+        const result = await applyMentorEvent(event);
+        sendJson(response, 202, result || { accepted: true });
         return;
       }
 
       if (request.method === "POST" && pathname === "/api/a2ui") {
         requireActiveMentor(request);
         const payload = plainCanvasPayload(await readBody(request));
-        if (activeMentorSource === "work") {
-          sendJson(response, 202, { accepted: false, preservedWork: true, surfaceId: session.canvas?.activeSurfaceId || null });
-          return;
-        }
-        session.canvas = payload.messages.length
+        enforceAutomaticActivityFocus(payload);
+        const candidateCanvas = payload.messages.length
           ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
           : { ...session.canvas, focus: payload.focus };
+        if (url.searchParams.get("validate") === "1") {
+          sendJson(response, 200, { valid: true, surfaceId: candidateCanvas.activeSurfaceId || null });
+          return;
+        }
+        if (activeMentorSource === "work") {
+          sendJson(response, 202, await preserveInlineWorkContinuation(payload));
+          return;
+        }
+        session.canvas = candidateCanvas;
+        session.continuation = payload.continuation;
         await persist();
         broadcast(agEvent("CUSTOM", {
           name: "a2ui",
@@ -583,6 +639,7 @@ export async function createLearnAnythingServer({
             focus: session.canvas.focus,
             activeSurfaceId: session.canvas.activeSurfaceId,
             messages: hydratedMessages(session.canvas, payload.messages),
+            continuation: session.continuation,
           },
         }));
         setMentorState("idle");
@@ -595,9 +652,12 @@ export async function createLearnAnythingServer({
         const changedComponent = updateCanvasFromAction(session.canvas, action);
         if (changedComponent) {
           await persist();
-          broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, changedComponent) }));
+          const value = action.action === "parameter_change"
+            ? canvasEventValue(session.canvas)
+            : componentDelta(session.canvas, changedComponent);
+          broadcast(agEvent("CUSTOM", { name: "a2ui", value }));
         }
-        if (action.action === "code_change") {
+        if (action.action === "code_change" || action.action === "parameter_change") {
           sendJson(response, 202, { accepted: true, persisted: true });
           return;
         }

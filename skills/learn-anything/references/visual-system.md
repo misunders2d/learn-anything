@@ -33,7 +33,9 @@ The mentor controls chat/work focus. The learner never manages layout. Both regi
 - Table: aligned columns and one header rule; avoid boxed cells and zebra-striping.
 - Passage: editorial serif with annotations as marginalia or inline notes.
 - Figure: centered visual with a quiet caption.
-- Parameters: aligned label, live monospace value, and clear control.
+- Math: native MathML with generous spacing and a plain-language caption; never use raw agent HTML.
+- Plot: clean local SVG, labeled axes, distinguishable line patterns, a concise legend, and an expandable data table for accessibility.
+- Parameters: aligned label, live monospace value, and a clear control placed next to the artifact it changes.
 - Quiz/checklist: accessible rows separated by hairlines, not stacks of boxes.
 
 ## Motion and recovery

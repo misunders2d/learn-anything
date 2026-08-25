@@ -163,6 +163,7 @@ function browserState() {
     connected: Boolean(document.querySelector('.status-dot.is-connected')),
     status: document.querySelector('[role=status]')?.innerText || '',
     messages: Array.from(document.querySelectorAll('.mentor-pane article')).map((item) => item.innerText),
+    lastMessageRole: document.querySelector('.mentor-pane article:last-of-type')?.classList.contains('chat-message-mentor') ? 'mentor' : 'user',
     stageTitle: document.querySelector('.stage-pane h2')?.innerText || '',
     runVisible: Array.from(document.querySelectorAll('.stage-pane button')).some((button) => button.innerText.trim() === 'Run'),
     editorVisible: Boolean(document.querySelector('.monaco-editor, .code-fallback')),
@@ -211,9 +212,11 @@ async function send(text) {
   await browser.evaluate(`(() => {
     window.__mentorStatuses = [];
     window.__mentorStatusObserver?.disconnect();
-    const target = document.querySelector('[role=status]');
-    window.__mentorStatusObserver = new MutationObserver(() => window.__mentorStatuses.push(target.innerText));
-    window.__mentorStatusObserver.observe(target, { childList: true, characterData: true, subtree: true });
+    window.__mentorStatusObserver = new MutationObserver(() => {
+      const status = document.querySelector('[role=status]')?.innerText || '';
+      if (status) window.__mentorStatuses.push(status);
+    });
+    window.__mentorStatusObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
   })()`);
   await browser.setComposer(text);
   await waitFor(async () => {
@@ -227,10 +230,10 @@ async function send(text) {
   }, "exact visible learner message", 10_000);
   await waitFor(async () => {
     const state = await browser.evaluate(browserState());
-    return state.messages.length >= before + 2 && !state.status && state.messages.at(-1).toLowerCase().includes("mentor");
+    return state.messages.length >= before + 2 && !state.status && state.lastMessageRole === "mentor";
   }, "real mentor reply", 180_000);
   const statuses = await browser.evaluate("window.__mentorStatuses || []");
-  assert.ok(statuses.some((status) => status.includes("Waiting") || status.includes("responding")), "visible mentor activity status must occur");
+  assert.ok(statuses.some((status) => /thinking|writing|adding|waiting|responding/i.test(status)), "visible mentor activity status must occur");
   await browser.evaluate("window.__mentorStatusObserver?.disconnect()");
 }
 
@@ -265,6 +268,16 @@ try {
     assert.ok(state.workComposerVisible);
     checks.push("mentor-driven-work-surface");
     checks.push("work-question-composer-visible");
+    const firstInteraction = await browser.evaluate(`(() => {
+      const element = document.querySelector('.parameter-surface input[type=range], .playground-surface textarea, .interaction-list button, .checklist-list input');
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, viewport: innerHeight };
+    })()`);
+    if (firstInteraction) {
+      assert.ok(firstInteraction.top >= 0 && firstInteraction.bottom <= firstInteraction.viewport, "first required interaction must be visible without scrolling");
+      checks.push("first-required-interaction-visible-without-scrolling");
+    }
     if (workQuestion) {
       await browser.click("document.querySelector('.code-fallback')?.closest('.stage-component')?.querySelector('.ask-component') || document.querySelector('.stage-component .ask-component')");
       await waitFor(() => browser.evaluate("document.querySelector('.work-question-bar').innerText.includes('About ')"), "selected work component context", 10_000);
@@ -276,7 +289,7 @@ try {
       }, "work-surface question in transcript", 10_000);
       await waitFor(async () => {
         const current = await browser.evaluate(browserState());
-        return current.focus === "work" && !current.status && current.messages.at(-1).toLowerCase().includes("mentor") && current.anchoredReplyText;
+        return current.focus === "work" && !current.status && current.lastMessageRole === "mentor" && current.anchoredReplyText;
       }, "mentor response to work-surface question", 180_000);
       checks.push("clicked-work-question-and-received-reply");
       state = await browser.evaluate(browserState());

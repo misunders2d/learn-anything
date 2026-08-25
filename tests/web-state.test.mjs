@@ -6,7 +6,7 @@ import {
   mergeSnapshotMessages,
   upsertMessage,
 } from "../skills/learn-anything/blocks/web/src/message-state.mjs";
-import { connectionIssueFor, resolveFocus, shouldReleaseRescue } from "../skills/learn-anything/blocks/web/src/workspace-state.mjs";
+import { connectionIssueFor, firstLearnerComponentId, resolveFocus, shouldReleaseRescue, workTaskKey } from "../skills/learn-anything/blocks/web/src/workspace-state.mjs";
 
 test("message start keeps a stable object after the partial map is cleared", () => {
   const event = { messageId: "message-1", role: "user" };
@@ -55,9 +55,48 @@ test("workspace focus is explicit with an interactive fallback", () => {
   assert.equal(resolveFocus(canvas(null, [{ component: "Markdown" }])), "chat");
 });
 
-test("rescue yields only to explicit chat focus or a new A2UI surface", () => {
+test("work task key changes for a new instruction but not execution output", () => {
+  const canvas = {
+    focus: "work",
+    activeSurfaceId: "lesson",
+    surfaces: {
+      lesson: {
+        dataModel: { title: "Numbers" },
+        components: {
+          root: { id: "root", component: "Column", children: ["instruction", "code"] },
+          instruction: { id: "instruction", component: "Markdown", content: "Change quantity to 3." },
+          code: { id: "code", component: "Code", value: "const quantity = 2;" },
+        },
+      },
+    },
+  };
+  const initial = workTaskKey(canvas);
+  assert.equal(firstLearnerComponentId(canvas), "instruction");
+  canvas.surfaces.lesson.components.code.lastResult = { stdout: "2" };
+  assert.equal(workTaskKey(canvas), initial);
+  canvas.surfaces.lesson.components.instruction.content = "Change price to 7.";
+  assert.notEqual(workTaskKey(canvas), initial);
+
+  canvas.surfaces.lesson.components.instruction.content = { path: "/instruction" };
+  canvas.surfaces.lesson.dataModel.instruction = "First bound task";
+  const boundInitial = workTaskKey(canvas);
+  canvas.surfaces.lesson.dataModel.instruction = "Second bound task";
+  assert.notEqual(workTaskKey(canvas), boundInitial);
+
+  canvas.surfaces.lesson.components.root.children = ["nested-row"];
+  canvas.surfaces.lesson.components["nested-row"] = { id: "nested-row", component: "Row", children: ["nested-instruction"] };
+  canvas.surfaces.lesson.components["nested-instruction"] = { id: "nested-instruction", component: "Markdown", content: { path: "/nestedInstruction" } };
+  canvas.surfaces.lesson.dataModel.nestedInstruction = "First nested task";
+  assert.equal(firstLearnerComponentId(canvas), "nested-instruction");
+  const nestedInitial = workTaskKey(canvas);
+  canvas.surfaces.lesson.dataModel.nestedInstruction = "Second nested task";
+  assert.notEqual(workTaskKey(canvas), nestedInitial);
+});
+
+test("rescue stays open during a question, then yields to the mentor's next focus", () => {
   assert.equal(shouldReleaseRescue({ activeSurfaceId: "same", focus: "work" }, "same"), false);
-  assert.equal(shouldReleaseRescue({ activeSurfaceId: "same", focus: "chat" }, "same"), true);
+  assert.equal(shouldReleaseRescue({ activeSurfaceId: "same", focus: "work" }, "same", true), true);
+  assert.equal(shouldReleaseRescue({ activeSurfaceId: "same", focus: "chat" }, "same"), false);
   assert.equal(shouldReleaseRescue({ activeSurfaceId: "next", focus: "work" }, "same"), true);
 });
 

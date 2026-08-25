@@ -70,7 +70,7 @@ The mentor stream is streaming agent text. AG-UI supplies that layer: ~16 event 
 
 ### 3.2 Custom component catalog
 
-Stock A2UI does not supply every subject-native learning surface. This kit's current custom catalog provides editable artifacts, structured tables, annotated passages, figures, parameter controls, Mermaid, quizzes, and callouts. Specialized surfaces such as spreadsheet grids or attention heatmaps are optional future prefab blocks; agents must not promise them until selected blocks actually provide them. Building a renderer is real work, not a free protocol feature.
+Stock A2UI does not supply every subject-native learning surface. This kit's current custom catalog provides editable artifacts, structured tables, annotated passages, figures, safe mathematical notation, bounded numeric plots, locally reactive precomputed parameter frames, Mermaid, quizzes, and callouts. Specialized surfaces such as spreadsheet grids or attention heatmaps are optional future prefab blocks; agents must not promise them until selected blocks actually provide them. Building a renderer is real work, not a free protocol feature.
 
 ---
 
@@ -98,7 +98,7 @@ Browser (React + A2UI renderer + persistent code editor)
 1. The invoking agent starts the selected server block, spawns the mentor in streaming input mode, and opens the browser.
 2. Learner types or speaks → HTTP POST to server → server yields one user message into the mentor's live input generator. **The session never restarts; context stays intact.**
 3. Mentor emits partial text deltas → server maps them to AG-UI `TEXT_MESSAGE_CONTENT` → SSE → browser paints tokens live.
-4. Mentor calls the `render_canvas(focus, a2ui_messages)` MCP tool → server validates and persists A2UI v0.9 messages → AG-UI `CUSTOM` event → renderer updates the active surface and flow state.
+4. Mentor calls `render_canvas(focus, a2ui_messages, continuation)` → server validates and persists A2UI v0.9 messages plus one explicit question/action → AG-UI `CUSTOM` event → renderer updates the active surface, flow state, and visible continuation cue.
 5. Mentor runs code in the sandbox → tool-use / tool-result events → AG-UI `TOOL_CALL_START` / `TOOL_CALL_RESULT` → browser streams the console panel live.
 6. Learner presses Stop mid-answer → `interrupt()`. Only available in streaming mode.
 7. Server continuously persists chat, reduced A2UI canvas state, journal, and notes to the learning directory.
@@ -155,12 +155,14 @@ The browser presents one primary activity at a time. The mentor drives the trans
 
 - **`chat` focus** — conversation fills the usable viewport for explanations, questions, alignment, and debriefs. It supports rich Markdown, Socratic guidance, progressive hints, interruption where the selected bridge permits it, and optional local speech blocks.
 - **`work` focus** — the current interactive stage fills the usable viewport. The stage can contain:
-  1. Subject-native artifacts such as source code, pure SQL, passages, datasets, diagrams, or parameter controls.
+  1. Subject-native artifacts such as source code, pure SQL, passages, datasets, diagrams, mathematical notation, numeric plots, or parameter controls.
   2. A clear local action and feedback adjacent to the artifact: result table, targeted diagnostic, annotation, or changed figure.
   3. Knowledge checks such as quizzes when they advance the current lesson.
   4. Optional specialized playground blocks supplied by the constructor kit.
 
 Learner-facing medium and execution backend are separate contracts. The stage declares the artifact syntax and an optional known runner. Fixtures, database seeding, wrapper programs, compiler arguments, and transport glue stay inside prefab blocks and are not rendered. If no native runner is available, preserve the subject-native artifact as non-runnable rather than exposing an unrelated host language.
+
+Interactivity is local-first. A parameter control is meaningful only when it immediately changes a visible bound artifact. The reference catalog supports bounded, precomputed frames that update the persisted A2UI data model in the browser without executable agent code or a mentor round trip. The settled state is persisted without waking the mentor. Arbitrary formulas, raw HTML/SVG, and agent-authored browser JavaScript remain outside the trust boundary.
 
 Conversation and active-stage regions remain mounted beneath the browser shell so a focus transition preserves the transcript, draft, editor buffer, cursor, undo history, console, and scroll position. Only the current flow state is visible as the primary workspace.
 
@@ -170,7 +172,7 @@ Every stage update should declare `focus`. If omitted, the browser uses a safe f
 
 The browser shell always provides a compact question composer at the bottom of every `work` surface. It is outside agent-rendered content and cannot be omitted by the composing agent. The learner can select text or code, or choose **Ask about this** on a component; the question carries that component id and selected excerpt. Clarification stays in `work`: the mentor response appears as an anchored note beside the relevant component while the editor, task, and output remain mounted and usable. Execution feedback may use the same anchoring path. Full `chat` is for broader discussion or an explicit flow change.
 
-The browser shell also owns one fixed **Ask mentor** rescue control outside the agent-rendered stage. It forces `chat` focus and focuses the full conversation composer if a malformed or inappropriate stage leaves the learner without a useful input path. The active work surface remains preserved underneath chat. Rescue yields when the mentor explicitly acknowledges chat focus or advances to a new surface; normal agent-driven flow then resumes. It is a failure-recovery path, not the normal way to ask a question. No other learner-facing layout controls are required.
+The browser shell also owns one fixed rescue control outside the agent-rendered stage. In work it reads **Ask mentor** and opens full chat. While rescue chat is open the same control reads **Back to activity**, providing an unconditional route to preserved sliders, code, selections, and output. Rescue stays open while the learner asks the question. After the mentor completes its reply, `focus: work` automatically restores the preserved activity even when it reuses the same surface; `focus: chat` keeps the conversation primary but leaves **Back to activity** available. A new surface clears the temporary rescue state. This is recovery, not a general layout manager. No other learner-facing layout controls are required.
 
 ---
 

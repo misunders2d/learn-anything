@@ -9,13 +9,33 @@ import {
   mergeSnapshotMessages,
   upsertMessage,
 } from "./message-state.mjs";
-import { activeSurface, applyA2uiMessages, resolveDataBinding, surfaceComponents } from "../../a2ui/state.mjs";
+import { activeSurface, applyA2uiMessages, applyParameterFrame, resolveDataBinding, surfaceComponents } from "../../a2ui/state.mjs";
 import { indentWithTab } from "./editor-input.mjs";
 import { clearDraft, loadDraft, saveDraft } from "./draft-store.mjs";
-import { connectionIssueFor, resolveFocus, shouldReleaseRescue } from "./workspace-state.mjs";
+import { connectionIssueFor, firstLearnerComponentId, resolveFocus, shouldReleaseRescue, workTaskKey } from "./workspace-state.mjs";
 
 marked.setOptions({ gfm: true, breaks: true });
-mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark", flowchart: { htmlLabels: false } });
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: "strict",
+  theme: "base",
+  themeVariables: {
+    background: "#fbfaf7",
+    primaryColor: "#f3f1ec",
+    primaryTextColor: "#1b1a18",
+    primaryBorderColor: "#c9c4bb",
+    secondaryColor: "#e8eeff",
+    secondaryTextColor: "#1b1a18",
+    secondaryBorderColor: "#9aace8",
+    tertiaryColor: "#ffffff",
+    tertiaryTextColor: "#1b1a18",
+    tertiaryBorderColor: "#c9c4bb",
+    lineColor: "#8b867e",
+    edgeLabelBackground: "#fbfaf7",
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+  },
+  flowchart: { htmlLabels: false },
+});
 
 const fragment = new URLSearchParams(window.location.hash.slice(1));
 const fragmentToken = fragment.get("token");
@@ -99,6 +119,14 @@ function WorkspaceStatus({ connected, mentorAttached, degraded, hasRunnableCode 
       {hasRunnableCode && <span className="status-detail">Local runner</span>}
     </div>
   );
+}
+
+function ContinuationBanner({ continuation }) {
+  if (!continuation?.text) return null;
+  return <section className={`course-continuation is-${continuation.kind || "action"}`}>
+    <div className="anchored-note-label">{continuation.kind === "question" ? "Your turn" : "Next step"}</div>
+    <Markdown content={continuation.text} />
+  </section>;
 }
 
 function ChatComposer({ draft, setDraft, sending, sendError, mentorState, onSend, onInterrupt, inputRef, centered = false }) {
@@ -272,7 +300,7 @@ function MermaidBlock({ source }) {
     let cancelled = false;
     mermaid.render(`diagram-${crypto.randomUUID()}`, source || "flowchart LR\nA[Empty]")
       .then(({ svg: rendered }) => {
-        if (!cancelled) setSvg(DOMPurify.sanitize(rendered, { USE_PROFILES: { svg: true, svgFilters: true } }));
+        if (!cancelled) setSvg(rendered);
       })
       .catch((reason) => !cancelled && setError(reason.message));
     return () => { cancelled = true; };
@@ -289,15 +317,98 @@ function FigureBlock({ component }) {
   return <figure className="figure-surface"><MermaidBlock source={component.mermaid || component.source} />{component.caption && <figcaption>{component.caption}</figcaption>}{(component.callouts || []).length > 0 && <ol>{component.callouts.map((callout, index) => <li key={callout.id || index}>{callout.label}</li>)}</ol>}</figure>;
 }
 
-function ParameterBlock({ component }) {
-  const [values, setValues] = useState(() => Object.fromEntries((component.controls || []).map((control) => [control.id, control.value])));
-  function submit(control, value) {
-    api("/api/action", { method: "POST", body: JSON.stringify({ action: "parameter_change", componentId: component.id, controlId: control.id, value: Number(value) }) }).catch(() => {});
-  }
-  return <section className="parameter-surface">{component.title && <h3>{component.title}</h3>}{(component.controls || []).map((control) => <label key={control.id}><span>{control.label}</span><output>{values[control.id]}</output><input name={control.id} type="range" min={control.min} max={control.max} step={control.step || 1} value={values[control.id]} onChange={(event) => setValues((current) => ({ ...current, [control.id]: Number(event.target.value) }))} onMouseUp={(event) => submit(control, event.currentTarget.value)} onTouchEnd={(event) => submit(control, event.currentTarget.value)} onKeyUp={(event) => submit(control, event.currentTarget.value)} /></label>)}</section>;
+function MathBlock({ component }) {
+  const [rendered, setRendered] = useState({ html: "" });
+  useEffect(() => {
+    let cancelled = false;
+    import("katex").then(({ renderToString }) => {
+      const html = renderToString(component.expression || "", {
+        displayMode: component.display !== false,
+        output: "mathml",
+        throwOnError: true,
+        trust: false,
+      });
+      if (!cancelled) setRendered({ html: DOMPurify.sanitize(html, { USE_PROFILES: { mathMl: true } }) });
+    }).catch((error) => !cancelled && setRendered({ error: error.message }));
+    return () => { cancelled = true; };
+  }, [component.expression, component.display]);
+  if (rendered.error) return <section className="activity-error">This notation could not render: {rendered.error}</section>;
+  return <figure className="math-surface" aria-busy={!rendered.html}><div dangerouslySetInnerHTML={{ __html: rendered.html }} />{component.caption && <figcaption>{component.caption}</figcaption>}</figure>;
 }
 
-function StageComponent({ component, onContext }) {
+const plotColors = ["var(--plot-1)", "var(--plot-2)", "var(--plot-3)", "var(--plot-4)", "var(--plot-5)", "var(--plot-6)", "var(--plot-7)", "var(--plot-8)"];
+const plotDashes = ["", "8 5", "2 4", "12 4 2 4"];
+
+function tickLabel(value) {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(value);
+}
+
+function PlotBlock({ component, onContext }) {
+  const width = 760;
+  const height = 390;
+  const margin = { top: 24, right: 24, bottom: 58, left: 68 };
+  const series = component.series || [];
+  const points = series.flatMap((item) => item.points || []);
+  const xValues = points.map((point) => point[0]);
+  const yValues = points.map((point) => point[1]);
+  const expand = (min, max) => min === max ? [min - 1, max + 1] : [min, max];
+  const [xMin, xMax] = expand(component.x?.min ?? Math.min(...xValues), component.x?.max ?? Math.max(...xValues));
+  const [yMin, yMax] = expand(component.y?.min ?? Math.min(...yValues), component.y?.max ?? Math.max(...yValues));
+  const x = (value) => margin.left + ((value - xMin) / (xMax - xMin)) * (width - margin.left - margin.right);
+  const y = (value) => height - margin.bottom - ((value - yMin) / (yMax - yMin)) * (height - margin.top - margin.bottom);
+  const ticks = Array.from({ length: 5 }, (_, index) => index / 4);
+  const describePoint = (item, point) => `${item.label || item.id || "Series"}: ${component.x?.label || "x"} ${tickLabel(point[0])}, ${component.y?.label || "y"} ${tickLabel(point[1])}`;
+  return (
+    <figure className="plot-surface">
+      {component.title && <h3>{component.title}</h3>}
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby={`${component.id}-plot-title ${component.id}-plot-desc`}>
+        <title id={`${component.id}-plot-title`}>{component.title || "Interactive plot"}</title>
+        <desc id={`${component.id}-plot-desc`}>{component.description || `${series.length} plotted series. A data table follows the chart.`}</desc>
+        <g className="plot-grid">
+          {ticks.map((ratio) => {
+            const tickX = margin.left + ratio * (width - margin.left - margin.right);
+            const tickY = margin.top + ratio * (height - margin.top - margin.bottom);
+            return <React.Fragment key={ratio}><line x1={tickX} x2={tickX} y1={margin.top} y2={height - margin.bottom} /><line x1={margin.left} x2={width - margin.right} y1={tickY} y2={tickY} /></React.Fragment>;
+          })}
+        </g>
+        <g className="plot-axes">
+          <line x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
+          <line x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
+          {ticks.map((ratio) => <React.Fragment key={ratio}>
+            <text x={margin.left + ratio * (width - margin.left - margin.right)} y={height - margin.bottom + 24} textAnchor="middle">{tickLabel(xMin + ratio * (xMax - xMin))}</text>
+            <text x={margin.left - 12} y={height - margin.bottom - ratio * (height - margin.top - margin.bottom) + 4} textAnchor="end">{tickLabel(yMin + ratio * (yMax - yMin))}</text>
+          </React.Fragment>)}
+          {component.x?.label && <text className="axis-label" x={(margin.left + width - margin.right) / 2} y={height - 12} textAnchor="middle">{component.x.label}{component.x.unit ? ` (${component.x.unit})` : ""}</text>}
+          {component.y?.label && <text className="axis-label" transform={`translate(17 ${(margin.top + height - margin.bottom) / 2}) rotate(-90)`} textAnchor="middle">{component.y.label}{component.y.unit ? ` (${component.y.unit})` : ""}</text>}
+        </g>
+        {series.map((item, seriesIndex) => {
+          const color = plotColors[seriesIndex];
+          const path = (item.points || []).map((point, pointIndex) => `${pointIndex ? "L" : "M"}${x(point[0])},${y(point[1])}`).join(" ");
+          return <g key={item.id || seriesIndex} data-plot-series={item.id || seriesIndex}>
+            <path d={path} fill="none" stroke={color} strokeWidth="3" strokeDasharray={plotDashes[seriesIndex % plotDashes.length]} />
+            {(item.points || []).map((point, pointIndex) => {
+              const label = describePoint(item, point);
+              const ask = () => onContext?.({ componentId: component.id, label: component.title || "plot", quote: label });
+              return <circle key={pointIndex} cx={x(point[0])} cy={y(point[1])} r="4.5" fill="var(--surface)" stroke={color} strokeWidth="2.5" aria-hidden="true" onClick={ask} />;
+            })}
+          </g>;
+        })}
+      </svg>
+      <div className="plot-legend" aria-label="Plot legend">{series.map((item, index) => <span key={item.id || index}><i style={{ "--series-color": plotColors[index] }} />{item.label || item.id || `Series ${index + 1}`}</span>)}</div>
+      <details className="plot-data"><summary>View plotted values</summary>{series.map((item, index) => <DataTable key={item.id || index} caption={item.label || item.id || `Series ${index + 1}`} columns={[component.x?.label || "x", component.y?.label || "y"]} rows={item.points} />)}</details>
+      {component.caption && <figcaption>{component.caption}</figcaption>}
+    </figure>
+  );
+}
+
+function ParameterBlock({ component, onParameterChange }) {
+  function change(control, value, persist = false) {
+    onParameterChange?.(component.id, control.id, Number(value), persist);
+  }
+  return <section className="parameter-surface">{component.title && <h3>{component.title}</h3>}{(component.controls || []).map((control) => <label key={control.id}><span>{control.label}</span><output>{control.value}{control.unit ? ` ${control.unit}` : ""}</output><input name={control.id} aria-label={control.label} type="range" min={control.min} max={control.max} step={control.step || 1} value={control.value} onChange={(event) => change(control, event.currentTarget.value)} onPointerUp={(event) => change(control, event.currentTarget.value, true)} onKeyUp={(event) => { if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) change(control, event.currentTarget.value, true); }} /></label>)}</section>;
+}
+
+function StageComponent({ component, onContext, onParameterChange }) {
   if (component.type === "markdown") return <article className="prose-surface"><Markdown content={component.content} /></article>;
   if (component.type === "callout") {
     const tone = component.tone === "success" ? "is-success" : component.tone === "warning" ? "is-warning" : "";
@@ -307,7 +418,9 @@ function StageComponent({ component, onContext }) {
   if (component.type === "table") return <DataTable columns={component.columns} rows={component.rows} caption={component.caption} />;
   if (component.type === "passage") return <PassageBlock component={component} />;
   if (component.type === "figure") return <FigureBlock component={component} />;
-  if (component.type === "params") return <ParameterBlock component={component} />;
+  if (component.type === "math") return <MathBlock component={component} />;
+  if (component.type === "plot") return <PlotBlock component={component} onContext={onContext} />;
+  if (component.type === "params") return <ParameterBlock component={component} onParameterChange={onParameterChange} />;
   if (component.type === "mermaid") return <MermaidBlock source={component.source} />;
   if (component.type === "quiz") {
     return (
@@ -342,13 +455,13 @@ function bindComponent(component, dataModel) {
   return Object.fromEntries(Object.entries(component).map(([key, value]) => [key, resolveDataBinding(value, dataModel)]));
 }
 
-function A2uiNode({ componentId, surface, onContext, replyFor }) {
+function A2uiNode({ componentId, surface, onContext, onParameterChange, replyFor }) {
   const source = surface?.components?.[componentId];
   if (!source) return <section className="activity-error">Canvas component “{componentId}” is missing.</section>;
   const component = bindComponent(source, surface.dataModel || {});
   if (component.component === "Column" || component.component === "Row") {
     const children = Array.isArray(component.children) ? component.children : [];
-    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} replyFor={replyFor} />)}</div>;
+    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} onParameterChange={onParameterChange} replyFor={replyFor} />)}</div>;
   }
   const normalized = { ...component, _surfaceId: surface.id, type: String(component.component || "unknown").toLowerCase() };
   const label = component.title || component.question || String(component.component || "component").toLowerCase();
@@ -359,7 +472,7 @@ function A2uiNode({ componentId, surface, onContext, replyFor }) {
       if (quote && component.id) onContext({ componentId: component.id, label, quote: quote.slice(0, 2000) });
     }} className="stage-component">
       <ErrorBoundary>
-        <StageComponent component={normalized} onContext={onContext} />
+        <StageComponent component={normalized} onContext={onContext} onParameterChange={onParameterChange} />
       </ErrorBoundary>
       <button type="button" onClick={() => onContext({ componentId: component.id, label })} className="ask-component">Ask about this</button>
       {reply && <aside className="anchored-mentor-note">
@@ -384,6 +497,7 @@ function App() {
   const [topic, setTopic] = useState("Learning workspace");
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState(null);
+  const [continuation, setContinuation] = useState(null);
   const [degraded, setDegraded] = useState([]);
   const [connected, setConnected] = useState(false);
   const [mentorAttached, setMentorAttached] = useState(false);
@@ -395,38 +509,96 @@ function App() {
   const [workContext, setWorkContext] = useState(null);
   const [mentorState, setMentorState] = useState("idle");
   const partial = useRef(new Map());
+  const rescueQuestionPending = useRef(false);
+  const rescueReplyCompleted = useRef(false);
+  const canvasRef = useRef(null);
+  const previousTaskKey = useRef("");
   const messageEndRef = useRef(null);
   const composerRef = useRef(null);
+  const stageScrollRef = useRef(null);
 
   const focus = resolveFocus(canvas);
   const surface = activeSurface(canvas);
   const components = surfaceComponents(canvas);
   const hasRunnableCode = components.some((component) => component?.component === "Code" && component.runnable !== false);
+  const hasWorkSurface = Boolean(surface?.components?.root?.children?.length);
   const workExchange = latestWorkExchange(messages);
   const canvasTitle = surface?.dataModel?.title || topic;
+  const taskKey = workTaskKey(canvas);
+  const taskInstructionId = firstLearnerComponentId(canvas);
+  const latestMentorMessage = [...messages].reverse().find((message) => message?.role === "assistant") || null;
+  const workMentorLead = latestMentorMessage
+    && !latestMentorMessage.context?.componentId
+    && latestMentorMessage.id !== workExchange?.answer?.id
+    ? latestMentorMessage
+    : null;
 
   function replyFor(componentId) {
     return [...messages].reverse().find((message) => message?.role === "assistant" && message?.source === "work" && message?.context?.componentId === componentId) || null;
   }
+
+  function clearRescueState() {
+    delete document.body.dataset.rescue;
+    delete document.body.dataset.rescueSurface;
+    rescueQuestionPending.current = false;
+    rescueReplyCompleted.current = false;
+  }
+
+  function releaseRescueIfReady(candidateCanvas, replyCompleted = rescueReplyCompleted.current) {
+    const rescuedSurfaceId = document.body.dataset.rescueSurface || "";
+    if (document.body.dataset.rescue === "1" && shouldReleaseRescue(candidateCanvas, rescuedSurfaceId, replyCompleted)) {
+      clearRescueState();
+      return true;
+    }
+    return false;
+  }
+
+  useEffect(() => {
+    canvasRef.current = canvas;
+  }, [canvas]);
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
   useEffect(() => {
-    document.body.dataset.focus = focus;
-    document.body.dataset.surfaceId = canvas?.activeSurfaceId || "";
-    const rescuedSurfaceId = document.body.dataset.rescueSurface || "";
-    if (document.body.dataset.rescue === "1" && shouldReleaseRescue(canvas, rescuedSurfaceId)) {
-      delete document.body.dataset.rescue;
-      delete document.body.dataset.rescueSurface;
-    }
-  }, [focus, canvas?.focus, canvas?.activeSurfaceId]);
+    const changed = Boolean(taskKey && taskKey !== previousTaskKey.current);
+    previousTaskKey.current = taskKey;
+    if (focus === "work" && changed) requestAnimationFrame(() => {
+      const instruction = [...(stageScrollRef.current?.querySelectorAll("[data-component-id]") || [])]
+        .find((element) => element.dataset.componentId === taskInstructionId);
+      instruction?.scrollIntoView({ behavior: "auto", block: "start" });
+    });
+  }, [focus, taskInstructionId, taskKey]);
 
   useEffect(() => {
-    const rescue = () => requestAnimationFrame(() => composerRef.current?.focus());
+    document.body.dataset.focus = focus;
+    document.body.dataset.surfaceId = canvas?.activeSurfaceId || "";
+    document.body.dataset.hasWork = hasWorkSurface ? "1" : "";
+    const returnedSurfaceId = document.body.dataset.returnWorkSurface || "";
+    if (document.body.dataset.returnWork === "1" && (focus === "work" || (returnedSurfaceId && canvas?.activeSurfaceId !== returnedSurfaceId))) {
+      delete document.body.dataset.returnWork;
+      delete document.body.dataset.returnWorkSurface;
+    }
+    releaseRescueIfReady(canvas);
+  }, [focus, canvas?.focus, canvas?.activeSurfaceId, hasWorkSurface]);
+
+  useEffect(() => {
+    const rescue = () => {
+      rescueQuestionPending.current = false;
+      rescueReplyCompleted.current = false;
+      requestAnimationFrame(() => composerRef.current?.focus());
+    };
     window.addEventListener("learn-anything:rescue-chat", rescue);
     return () => window.removeEventListener("learn-anything:rescue-chat", rescue);
+  }, []);
+
+  useEffect(() => {
+    const returnToWork = () => {
+      requestAnimationFrame(() => document.querySelector(".stage-pane input, .stage-pane textarea, .stage-pane button")?.focus());
+    };
+    window.addEventListener("learn-anything:return-work", returnToWork);
+    return () => window.removeEventListener("learn-anything:return-work", returnToWork);
   }, []);
 
   useEffect(() => {
@@ -473,7 +645,12 @@ function App() {
       if (event.type === "STATE_SNAPSHOT") {
         setTopic(event.snapshot.topic || "Learning workspace");
         setMessages(mergeSnapshotMessages(event.snapshot.transcript, partial.current));
-        setCanvas((current) => applyCanvasPayload(current, event.snapshot.canvas));
+        setCanvas((current) => {
+          const next = applyCanvasPayload(current, event.snapshot.canvas);
+          canvasRef.current = next;
+          return next;
+        });
+        setContinuation(event.snapshot.continuation || null);
         setDegraded(event.snapshot.assembly?.degraded || []);
         setMentorState(event.snapshot.mentorState || "idle");
         setMentorAttached(Boolean(event.snapshot.mentorAttached));
@@ -489,9 +666,21 @@ function App() {
       } else if (event.type === "TEXT_MESSAGE_END") {
         const finished = partial.current.get(event.messageId);
         partial.current.delete(event.messageId);
-        if (finished?.role === "assistant") setMentorState("idle");
+        if (finished?.role === "assistant") {
+          setMentorState("idle");
+          if (rescueQuestionPending.current) {
+            rescueReplyCompleted.current = true;
+            releaseRescueIfReady(canvasRef.current, true);
+          }
+        }
       } else if (event.type === "CUSTOM" && event.name === "a2ui") {
-        setCanvas((current) => applyCanvasPayload(current, event.value));
+        if (event.value?.continuation) setContinuation(event.value.continuation);
+        setCanvas((current) => {
+          const next = applyCanvasPayload(current, event.value);
+          canvasRef.current = next;
+          releaseRescueIfReady(next);
+          return next;
+        });
       } else if (event.type === "CUSTOM" && event.name === "mentor_presence") {
         setMentorAttached(Boolean(event.value?.attached));
       } else if (event.type === "CUSTOM" && event.name === "mentor_state") {
@@ -533,7 +722,13 @@ function App() {
       if (source === "work") {
         setWorkDraft("");
         setWorkContext(null);
-      } else setChatDraft("");
+      } else {
+        setChatDraft("");
+        if (document.body.dataset.rescue === "1") {
+          rescueQuestionPending.current = true;
+          rescueReplyCompleted.current = false;
+        }
+      }
       setMentorState("waiting");
     } catch (error) {
       const issue = connectionIssueFor(error);
@@ -553,6 +748,16 @@ function App() {
       setMentorState("idle");
     } catch (error) {
       setSendError(error.message);
+    }
+  }
+
+  function updateParameter(componentId, controlId, value, persist = false) {
+    setCanvas((current) => applyParameterFrame(current, componentId, controlId, value) || current);
+    if (persist) {
+      api("/api/action", {
+        method: "POST",
+        body: JSON.stringify({ action: "parameter_change", componentId, controlId, value }),
+      }).catch((error) => setSendError(`Could not save this control: ${error.message}`));
     }
   }
 
@@ -582,6 +787,7 @@ function App() {
               {messages.map((message) => <Message key={message.id} message={message} />)}
               <div ref={messageEndRef} />
             </div>
+            <ContinuationBanner continuation={continuation?.kind === "question" ? continuation : null} />
             <ChatComposer draft={chatDraft} setDraft={(value) => updateComposerDraft("chat", value)} sending={sending} sendError={sendError} mentorState={mentorState} onSend={() => sendMessage("chat")} onInterrupt={interruptMentor} inputRef={composerRef} />
           </>
         )}
@@ -592,10 +798,14 @@ function App() {
           <div><span className="stage-topic">{topic}</span><h2>{canvasTitle}</h2></div>
           <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
         </header>
-        <div className="stage-scroll scroll-region">
+        <div ref={stageScrollRef} className="stage-scroll scroll-region">
           <div className="stage-column">
+            {workMentorLead && <section className="work-mentor-lead">
+              <div className="anchored-note-label">Mentor</div>
+              <Markdown content={workMentorLead.content} />
+            </section>}
             {surface?.components?.root
-              ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} replyFor={replyFor} />
+              ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} onParameterChange={updateParameter} replyFor={replyFor} />
               : null}
             {workExchange && !workExchange.answer?.context?.componentId && <section className="work-mentor-reply">
               <div className="anchored-note-label">Your question</div>
@@ -607,6 +817,7 @@ function App() {
         </div>
         <form aria-label="Ask mentor from work" onSubmit={(event) => { event.preventDefault(); void sendMessage("work"); }} className="work-question-bar">
           <div className="work-question-inner">
+            <ContinuationBanner continuation={continuation?.kind === "action" ? continuation : null} />
             <div className="mentor-presence" aria-live="polite">
               {mentorState === "waiting" && <><span className="thinking-dot" />Thinking about this… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}
               {mentorState === "responding" && <><span className="thinking-dot" />Adding guidance… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}

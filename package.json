@@ -1,6 +1,6 @@
 {
   "name": "@misunders2d/learn-anything",
-  "version": "0.1.5",
+  "version": "0.1.8",
   "description": "Build adaptive browser learning workspaces for any topic or project",
   "keywords": [
     "agent-skill",
@@ -51,6 +51,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.241",
     "dompurify": "3.4.14",
+    "katex": "0.18.4",
     "marked": "18.0.10",
     "mermaid": "11.17.0",
     "react": "19.2.8",

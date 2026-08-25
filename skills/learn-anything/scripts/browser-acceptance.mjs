@@ -61,6 +61,9 @@ async function api(address, path, options = {}, mentorId = null) {
 
 function renderCanvas(address, stage, mentorId) {
   const payload = canvasEventValue(canvasFromStage(stage, stage.title || "Learning canvas"));
+  payload.continuation = stage.continuation || (payload.focus === "work"
+    ? { kind: "action", text: `Complete the visible ${stage.title || "activity"}.` }
+    : { kind: "question", text: "What would you like to explore next?" });
   return api(address, "/api/a2ui", { method: "POST", body: JSON.stringify(payload) }, mentorId);
 }
 
@@ -167,7 +170,9 @@ function viewExpression() {
     const stageStyle = getComputedStyle(stage);
     return {
       bodyFocus: document.body.dataset.focus,
+      hasWorkState: document.body.dataset.hasWork || '',
       rescueState: document.body.dataset.rescue || '',
+      returnWorkState: document.body.dataset.returnWork || '',
       crashed: document.body.dataset.crashed || '',
       workspace: Boolean(workspace),
       viewport: innerWidth,
@@ -185,7 +190,7 @@ function viewExpression() {
   })()`;
 }
 
-async function assertView(browser, expected, { rescued = false, mobile = false } = {}) {
+async function assertView(browser, expected, { rescued = false, returned = false, mobile = false } = {}) {
   await waitFor(async () => {
     const state = await browser.evaluate(viewExpression());
     const primaryWidth = expected === "chat" ? state.mentorWidth : state.stageWidth;
@@ -193,8 +198,9 @@ async function assertView(browser, expected, { rescued = false, mobile = false }
     const primaryOpacity = expected === "chat" ? state.mentorOpacity : state.stageOpacity;
     const secondaryOpacity = expected === "chat" ? state.stageOpacity : state.mentorOpacity;
     return state.workspace
-      && state.bodyFocus === (rescued ? "work" : expected)
+      && (rescued || returned || state.bodyFocus === expected)
       && state.rescueState === (rescued ? "1" : "")
+      && state.returnWorkState === (returned ? "1" : "")
       && primaryWidth > state.viewport * 0.9
       && secondaryWidth < 10
       && primaryOpacity === "1"
@@ -202,11 +208,13 @@ async function assertView(browser, expected, { rescued = false, mobile = false }
   }, `${expected} computed visibility${mobile ? " on mobile" : ""}`, 4000);
 
   const state = await browser.evaluate(viewExpression());
-  assert.equal(state.bodyFocus, rescued ? "work" : expected);
+  if (!rescued && !returned) assert.equal(state.bodyFocus, expected);
   assert.equal(state.rescueState, rescued ? "1" : "");
+  assert.equal(state.returnWorkState, returned ? "1" : "");
   assert.equal(expected === "chat" ? state.mentorPointerEvents : state.stagePointerEvents, "auto");
   assert.equal(expected === "chat" ? state.stagePointerEvents : state.mentorPointerEvents, "none");
-  assert.equal(state.rescueDisplay, expected === "work" ? "block" : "none");
+  const rescueVisible = expected === "work" || rescued || returned || (expected === "chat" && state.hasWorkState === "1");
+  assert.equal(state.rescueDisplay, rescueVisible ? "block" : "none");
   assert.equal(state.crashed, "");
   if (expected === "work") assert.ok(state.workComposerWidth > 100, "work question composer must stay visible");
   assert.ok(state.rootText.trim().length > 0, "primary workspace must not be blank");
@@ -314,7 +322,7 @@ try {
       "x-learn-anything-token": address.accessToken,
       "x-learn-anything-mentor": mentorId,
     },
-    body: JSON.stringify({ focus: "work", messages: [null] }),
+    body: JSON.stringify({ focus: "work", messages: [null], continuation: { kind: "action", text: "Continue the activity." } }),
   });
   assert.equal(rejectedCanvas.status, 400);
   await assertView(browser, "chat");
@@ -362,6 +370,73 @@ try {
       { id: "browser-code", type: "code", language: "javascript", runnable: true, value: "console.log('initial');" },
     ],
   };
+  const workLeadId = "work-transition-reply";
+  for (const event of [
+    { type: "TEXT_MESSAGE_START", messageId: workLeadId, role: "assistant" },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: workLeadId, delta: `This explanation must remain visible when the activity opens.\n\n${"Mentor context stays above the activity. ".repeat(120)}` },
+    { type: "TEXT_MESSAGE_END", messageId: workLeadId },
+  ]) await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify(event) }, mentorId);
+  await renderCanvas(address, workStage, mentorId);
+  await assertView(browser, "work");
+  assert.ok(await browser.evaluate("document.querySelector('.work-mentor-lead')?.innerText.includes('must remain visible')"));
+  await waitFor(() => browser.evaluate("document.querySelector('.stage-pane .course-continuation')?.innerText.toLowerCase().includes('next step') === true"), "work continuation cue");
+  record("mentor-reply-visible-through-work-transition");
+  record("work-turn-shows-explicit-next-action");
+
+  await renderCanvas(address, { ...workStage, focus: "chat" }, mentorId);
+  await assertView(browser, "chat");
+  await waitFor(() => browser.evaluate("document.querySelector('.mentor-pane .course-continuation')?.innerText.toLowerCase().includes('your turn') === true"), "chat continuation cue");
+  assert.equal(await browser.evaluate("document.getElementById('mentor-rescue').textContent"), "Back to activity");
+  await browser.evaluate("document.getElementById('mentor-rescue').click()");
+  await assertView(browser, "work", { returned: true });
+  record("programmatic-chat-keeps-back-to-activity");
+  await renderCanvas(address, workStage, mentorId);
+  await assertView(browser, "work");
+
+  const nestedComponents = [
+    { id: "root", component: "Column", children: ["nested-layout"] },
+    { id: "nested-layout", component: "Column", children: ["instruction", "scroll-code", "support"] },
+    { id: "instruction", component: "Markdown", content: { path: "/instruction" } },
+    { id: "scroll-code", component: "Code", language: "javascript", runnable: true, value: "console.log(1);" },
+    { id: "support", component: "Markdown", content: "Supporting detail ".repeat(300) },
+  ];
+  await api(address, "/api/a2ui", {
+    method: "POST",
+    body: JSON.stringify({
+      focus: "work",
+      continuation: { kind: "action", text: "Change one value in the visible code." },
+      messages: [
+        { version: "v0.9", deleteSurface: { surfaceId: "work-one" } },
+        { version: "v0.9", createSurface: { surfaceId: "work-one", catalogId: "urn:learn-anything:catalog:v1" } },
+        { version: "v0.9", updateComponents: { surfaceId: "work-one", components: nestedComponents } },
+        { version: "v0.9", updateDataModel: { surfaceId: "work-one", path: "/", value: { title: "First task", instruction: "### First task\n\nChange one value." } } },
+      ],
+    }),
+  }, mentorId);
+  await assertView(browser, "work");
+  await browser.evaluate("document.querySelector('.stage-scroll').scrollTop = document.querySelector('.stage-scroll').scrollHeight");
+  assert.ok(await browser.evaluate("document.querySelector('.stage-scroll').scrollTop > 100"));
+  await api(address, "/api/a2ui", {
+    method: "POST",
+    body: JSON.stringify({
+      focus: "work",
+      continuation: { kind: "action", text: "Run the revised visible example." },
+      messages: [
+        { version: "v0.9", updateDataModel: { surfaceId: "work-one", path: "/title", value: "Second task" } },
+        { version: "v0.9", updateDataModel: { surfaceId: "work-one", path: "/instruction", value: "### Second task\n\nRun the revised example." } },
+      ],
+    }),
+  }, mentorId);
+  await waitFor(() => browser.evaluate(`(() => {
+    const viewport = document.querySelector('.stage-scroll')?.getBoundingClientRect();
+    const instruction = document.querySelector('[data-component-id="instruction"]')?.getBoundingClientRect();
+    if (!viewport || !instruction) return false;
+    const overlap = Math.max(0, Math.min(viewport.bottom, instruction.bottom) - Math.max(viewport.top, instruction.top));
+    return overlap >= instruction.height * 0.9;
+  })()`), "new nested bound instruction is visible");
+  assert.ok(await browser.evaluate("document.querySelector('[data-component-id=instruction]').innerText.includes('Second task')"));
+  record("new-task-instruction-scrolls-into-view");
+
   await renderCanvas(address, workStage, mentorId);
   await assertView(browser, "work");
   const editorKind = await waitForEditor(browser);
@@ -468,6 +543,13 @@ try {
   assert.equal(await browser.evaluate(editorValueExpression()), code);
   record("rescue-chat-visible");
   record("editor-preserved-through-rescue");
+  assert.equal(await browser.evaluate("document.getElementById('mentor-rescue').textContent"), "Back to activity");
+  await browser.evaluate("document.getElementById('mentor-rescue').click()");
+  await assertView(browser, "work", { returned: true });
+  assert.equal(await browser.evaluate(editorValueExpression()), code);
+  record("manual-back-to-preserved-activity");
+  await browser.evaluate("document.getElementById('mentor-rescue').click()");
+  await assertView(browser, "chat", { rescued: true });
 
   const transcriptBeforeShift = (await api(address, "/api/session")).transcript.length;
   await setComposer(browser, "do not send on shift enter");
@@ -486,13 +568,28 @@ try {
   await assertView(browser, "chat", { rescued: true });
   record("enter-submits-without-navigation");
 
+  const rescueReplyId = "rescue-question-reply";
+  for (const event of [
+    { type: "TEXT_MESSAGE_START", messageId: rescueReplyId, role: "assistant" },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: rescueReplyId, delta: "Move the existing control now." },
+  ]) await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify(event) }, mentorId);
   await renderCanvas(address, { ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "chat", { rescued: true });
-  record("same-surface-work-cannot-dismiss-rescue");
+  await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify({ type: "TEXT_MESSAGE_END", messageId: rescueReplyId }) }, mentorId);
+  await assertView(browser, "work");
+  record("same-surface-work-resumes-after-rescue-reply");
+  record("work-restore-survives-canvas-before-reply-end");
 
+  await browser.evaluate("document.getElementById('mentor-rescue').click()");
+  await assertView(browser, "chat", { rescued: true });
   await renderCanvas(address, { ...workStage, focus: "chat", components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
-  await assertView(browser, "chat");
-  record("explicit-chat-acknowledges-rescue");
+  await assertView(browser, "chat", { rescued: true });
+  assert.equal(await browser.evaluate("document.getElementById('mentor-rescue').textContent"), "Back to activity");
+  record("mentor-can-keep-chat-after-rescue");
+  await browser.evaluate("document.getElementById('mentor-rescue').click()");
+  await assertView(browser, "work", { returned: true });
+  assert.equal(await browser.evaluate(editorValueExpression()), code);
+  record("back-to-activity-available-after-chat-focused-reply");
 
   await renderCanvas(address, { ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "work");
@@ -540,7 +637,7 @@ try {
     version: "learn-anything/v1",
     surfaceId: "subject-native-non-code",
     focus: "work",
-    title: "Read, notice, vary",
+    title: "Read and connect",
     components: [
       {
         id: "poem",
@@ -550,16 +647,10 @@ try {
         annotations: [{ quote: "shoures soote", note: "sweet showers" }],
       },
       {
-        id: "wave-figure",
+        id: "reading-figure",
         type: "figure",
-        mermaid: "flowchart LR\nA[Path A] --> C[Detector]\nB[Path B] --> C",
-        caption: "Two paths combine at one detector.",
-      },
-      {
-        id: "phase-control",
-        type: "params",
-        title: "Change the phase",
-        controls: [{ id: "phase", label: "Phase", min: 0, max: 1, step: 0.25, value: 0 }],
+        mermaid: "flowchart LR\nA[Middle English line] --> B[Word-level gloss]\nB --> C[Meaning in context]",
+        caption: "Move from the original line to a gloss, then to an interpretation.",
       },
     ],
   };
@@ -567,19 +658,121 @@ try {
   await assertView(browser, "work");
   assert.ok(await browser.evaluate("document.querySelector('.passage-surface').innerText.includes('sweet showers')"));
   await waitFor(() => browser.evaluate("Boolean(document.querySelector('.figure-surface svg'))"), "subject figure rendering", 12_000);
+  const diagramTheme = await browser.evaluate(`(() => {
+    const svg = document.querySelector('.figure-surface svg');
+    const label = svg?.querySelector('.nodeLabel, text');
+    const node = svg?.querySelector('.node rect, .node polygon, .node circle');
+    return {
+      content: svg?.textContent || '',
+      labelFill: label ? getComputedStyle(label).fill : '',
+      nodeFill: node ? getComputedStyle(node).fill : '',
+    };
+  })()`);
+  assert.match(diagramTheme.content, /Middle English line/);
+  assert.notEqual(diagramTheme.labelFill, diagramTheme.nodeFill, "diagram labels must contrast with node fills");
+  await renderCanvas(address, {
+    ...subjectNativeStage,
+    surfaceId: subjectNativeStage.surfaceId,
+    components: [{
+      id: "strict-figure",
+      type: "figure",
+      mermaid: "flowchart LR\nA[\"<img src=x onerror='window.__mermaidXss=1'>\"] --> B[Safe]",
+      caption: "Strict Mermaid rendering",
+    }],
+  }, mentorId);
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.figure-surface svg'))"), "strict Mermaid rendering", 12_000);
+  assert.equal(await browser.evaluate("window.__mermaidXss || 0"), 0);
+  assert.equal(await browser.evaluate("Boolean(document.querySelector('.figure-surface script, .figure-surface [onerror], .figure-surface [onclick]'))"), false);
   assert.equal(await browser.evaluate("Boolean(document.querySelector('.code-fallback, .console-output'))"), false);
+  record("annotated-passage-visible");
+  record("subject-figure-visible");
+  record("subject-figure-labels-readable");
+  record("strict-mermaid-blocks-script-and-event-injection");
+  record("non-code-subject-hides-code-console");
+
+  const lossSeries = (weight) => [
+    { id: "loss", label: "Loss across weights", points: [[0, 1], [0.25, 0.25], [0.5, 0], [0.75, 0.25], [1, 1]] },
+    { id: "current", label: "Current weight", points: [[weight, (1 - 2 * weight) ** 2]] },
+  ];
+  const neuronFrame = (value) => ({
+    value,
+    updates: [
+      { path: "/equation", value: `\\hat{y}=2\\times${value}=${2 * value},\\quad loss=(1-${2 * value})^2=${(1 - 2 * value) ** 2}` },
+      { path: "/lossSeries", value: lossSeries(value) },
+    ],
+  });
+  const reactiveStage = {
+    version: "learn-anything/v1",
+    surfaceId: "one-neuron-model",
+    focus: "work",
+    title: "See one neuron make a prediction",
+    dataModel: {
+      weight: 0,
+      equation: "\\hat{y}=2\\times0=0,\\quad loss=(1-0)^2=1",
+      lossSeries: lossSeries(0),
+    },
+    components: [
+      { id: "neuron-copy", type: "markdown", content: "The input is **2** and the target is **1**. Move the weight: the prediction and squared error change together." },
+      { id: "weight-control", type: "params", title: "Change the weight", controls: [{ id: "weight", label: "Weight", min: 0, max: 1, step: 0.25, value: 0, path: "/weight", frames: [0, 0.25, 0.5, 0.75, 1].map(neuronFrame) }] },
+      { id: "neuron-equation", type: "math", expression: { path: "/equation" }, caption: "Prediction equals input times weight; loss measures distance from the target." },
+      { id: "loss-plot", type: "plot", title: "How the weight changes loss", description: "Squared error for input 2 and target 1.", x: { label: "Weight", min: 0, max: 1 }, y: { label: "Squared loss", min: 0, max: 1 }, series: { path: "/lossSeries" }, caption: "This is one teaching neuron, not a full neural network." },
+    ],
+  };
+  await renderCanvas(address, reactiveStage, mentorId);
+  await assertView(browser, "work");
+  const firstInteraction = await browser.evaluate(`(() => {
+    const input = document.querySelector('.parameter-surface input[type=range]');
+    const rect = input?.getBoundingClientRect();
+    return rect ? { top: rect.top, bottom: rect.bottom, viewport: innerHeight } : null;
+  })()`);
+  assert.ok(firstInteraction && firstInteraction.top >= 0 && firstInteraction.bottom <= firstInteraction.viewport, "the first required interaction must be visible at 1280x800 without scrolling");
+  record("first-required-interaction-visible-without-scrolling");
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.plot-surface svg'))"), "subject plot rendering");
+  await waitFor(() => browser.evaluate("document.querySelector('.math-surface').textContent.includes('0')"), "subject math rendering");
+  assert.equal(await browser.evaluate("Boolean(document.querySelector('.code-fallback, .console-output'))"), false);
+  assert.equal(await browser.evaluate("document.querySelectorAll('.plot-surface circle[tabindex]').length"), 0);
+  assert.ok(await browser.evaluate("document.querySelector('.plot-data summary').textContent.includes('View plotted values')"));
+  const initialPlotPath = await browser.evaluate("document.querySelector('[data-plot-series=current] path').getAttribute('d')");
   await browser.evaluate(`(() => {
     const input = document.querySelector('.parameter-surface input[type=range]');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(input, '0.75');
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
   })()`);
-  await waitFor(async () => sessionComponent((await api(address, "/api/session")), "phase-control").controls[0].value === 0.75, "parameter persistence");
-  record("annotated-passage-visible");
-  record("subject-figure-visible");
+  await waitFor(() => browser.evaluate(`document.querySelector('[data-plot-series=current] path').getAttribute('d') !== ${JSON.stringify(initialPlotPath)}`), "local plot reaction before persistence");
+  await waitFor(() => browser.evaluate("document.querySelector('.math-surface').textContent.includes('0.75')"), "local math reaction before persistence");
+  assert.equal(sessionComponent(await api(address, "/api/session"), "weight-control").controls[0].value, 0);
+  record("parameter-updates-plot-and-math-without-round-trip");
+  await browser.evaluate("document.querySelector('.parameter-surface input[type=range]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))");
+  await waitFor(async () => sessionComponent((await api(address, "/api/session")), "weight-control").controls[0].value === 0.75, "parameter persistence");
+  await browser.call("Page.reload", { ignoreCache: true });
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.plot-surface svg'))"), "reactive canvas after refresh");
+  await waitFor(() => browser.evaluate("document.querySelector('.math-surface').textContent.includes('0.75')"), "reactive math after refresh");
+  record("one-neuron-interactive-model");
+  record("safe-math-and-structured-plot-visible");
+  record("plot-avoids-per-point-keyboard-stops");
   record("parameter-control-interactive");
-  record("non-code-subject-hides-code-console");
+  record("reactive-parameter-state-restored-after-refresh");
+
+  await renderCanvas(address, {
+    version: "learn-anything/v1",
+    surfaceId: "one-neuron-model",
+    focus: "work",
+    title: "Dense plot remains navigable",
+    components: [{
+      id: "dense-plot",
+      type: "plot",
+      title: "Five hundred samples",
+      x: { label: "Sample", min: 0, max: 499 },
+      y: { label: "Normalized value", min: 0, max: 1 },
+      series: [{ id: "samples", label: "Samples", points: Array.from({ length: 500 }, (_, index) => [index, (Math.sin(index / 25) + 1) / 2]) }],
+    }],
+  }, mentorId);
+  await assertView(browser, "work");
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('[data-plot-series=samples] path'))"), "dense plot rendering");
+  assert.equal(await browser.evaluate("document.querySelectorAll('.plot-surface circle[tabindex]').length"), 0);
+  assert.equal(await browser.evaluate("document.querySelectorAll('.plot-surface circle').length"), 500);
+  record("maximum-series-plot-has-no-point-tab-trap");
 
   for (const [index, focus] of ["chat", "work", "chat", "work"].entries()) {
     await renderCanvas(address, { ...workStage, surfaceId: `rapid-${index}`, focus, components: [{ ...workStage.components[1], value: code }] }, mentorId);
@@ -617,6 +810,17 @@ try {
   await assertView(browser, "work");
   await waitFor(() => browser.evaluate("Boolean(document.querySelector('.stage-pane .activity-error'))"), "diagram error card");
   record("malformed-diagram-contained");
+
+  await renderCanvas(address, {
+    version: "learn-anything/v1",
+    surfaceId: "bad-diagram",
+    focus: "work",
+    title: "Bad math containment",
+    components: [{ id: "bad-equation", type: "math", expression: "\\definitelyUnknownCommand{" }],
+  }, mentorId);
+  await assertView(browser, "work");
+  await waitFor(() => browser.evaluate("document.querySelector('.stage-pane .activity-error')?.innerText.includes('notation could not render')"), "math error card");
+  record("malformed-math-contained");
 
   await renderCanvas(address, { ...workStage, surfaceId: "resume", components: [{ ...workStage.components[1], value: code }] }, mentorId);
   await assertView(browser, "work");

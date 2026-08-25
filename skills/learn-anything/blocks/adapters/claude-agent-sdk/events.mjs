@@ -6,6 +6,18 @@ export function createClaudeEventState() {
   };
 }
 
+export function fallbackCanvasForClaudeItem(item) {
+  const work = ["execution_result", "stage_action"].includes(item?.type)
+    || (item?.type === "user_message" && item.message?.source === "work");
+  return {
+    focus: work ? "work" : "chat",
+    messages: [],
+    continuation: work
+      ? { kind: "action", text: "Complete the next unfinished step in the visible activity using the mentor's guidance." }
+      : { kind: "question", text: "What would you like to understand next?" },
+  };
+}
+
 export function mapClaudeMessage(message, state = createClaudeEventState()) {
   const output = [];
 

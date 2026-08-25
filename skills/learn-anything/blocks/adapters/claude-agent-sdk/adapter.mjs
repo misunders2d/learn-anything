@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import { createSdkMcpServer, startup, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { createClaudeEventState, mapClaudeMessage } from "./events.mjs";
+import { A2UI_CATALOG_PROMPT } from "../../a2ui/prompt.mjs";
+import { createClaudeEventState, fallbackCanvasForClaudeItem, mapClaudeMessage } from "./events.mjs";
 
 function option(args, name) {
   const index = args.indexOf(name);
@@ -72,17 +73,25 @@ const token = option(args, "--token") || session.security?.accessToken;
 if (!token) throw new Error("Session has no access token.");
 const abortController = new AbortController();
 let activeRunId = null;
+let continuationPostedThisTurn = false;
 const mentorId = crypto.randomUUID();
 const renderCanvas = tool(
   "render_canvas",
-  "Apply A2UI v0.9 messages to the browser learning canvas and set chat or work focus.",
+  "Apply A2UI v0.9 messages and publish the one explicit question or action that continues the course.",
   {
     focus: z.enum(["chat", "work"]),
     messages: z.array(z.record(z.string(), z.unknown())).max(100),
+    continuationKind: z.enum(["question", "action"]),
+    continuation: z.string().min(1),
   },
-  async ({ focus, messages }) => {
+  async ({ focus, messages, continuationKind, continuation }) => {
     try {
-      const result = await post(url, "/api/a2ui", { focus, messages }, token, mentorId);
+      const result = await post(url, "/api/a2ui", {
+        focus,
+        messages,
+        continuation: { kind: continuationKind, text: continuation },
+      }, token, mentorId);
+      continuationPostedThisTurn = true;
       return { content: [{ type: "text", text: `Canvas updated: ${result.surfaceId || "preserved"}` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Canvas update failed: ${error.message}` }], isError: true };
@@ -112,9 +121,11 @@ const learningTools = createSdkMcpServer({
 
 const systemAppend = `You are the headless mentor inside a learn-anything browser workspace. The browser is the learner-facing surface and observation layer. Teach toward: ${session.topic}. Assume no prior knowledge until the learner demonstrates it. Explain a concept before code, use progressive hints, and react automatically to submitted artifacts, execution output, errors, and interactive answers. Never ask the learner to repeat evidence the browser captured.
 
-Drive one primary activity at a time. Use chat focus for explanation, questions, alignment, and debrief. Use work focus only after preparing one clear interactive task. Inline work clarification stays on the current canvas: answer without calling render_canvas so the editor and result remain mounted. Keep implementation scaffolding backstage and show the subject's native artifact.
+Drive one primary activity at a time. Use chat focus for a broad learner question or one genuine question that requires their answer. Do not switch to chat merely to acknowledge, explain, or debrief an observed activity result; keep that progression in work focus with one visible next action. Inline work clarification stays on the current canvas: call render_canvas with work focus, no messages, and one concrete action continuation; the server preserves the mounted editor and result while updating that cue. Keep implementation scaffolding backstage and show the subject's native artifact. Use a visual only for a named relationship: Figure for structure, Plot for quantitative change, Math for notation, and finite Params frames for a bounded state sequence. A control must immediately change a visible bound artifact; a plot illustrates rather than proves.
 
-When creating or updating work, call render_canvas with actual A2UI v0.9 messages. A new canvas normally sends createSurface, updateComponents, and updateDataModel. Use catalogId "urn:learn-anything:catalog:v1". updateComponents uses a flat adjacency list with one root component: {"id":"root","component":"Column","children":["intro"]}. Supported learning components are Markdown, Callout, Code, Table, Passage, Figure, Params, Mermaid, Quiz, and Checklist. Their property names match the kit stage catalog except the discriminator is component, not type. Code uses {language,value,runnable,run:{runner,setup?}}. All messages include version "v0.9". Never send executable UI code.
+For every turn, call render_canvas exactly once—even when messages is empty—to publish structured continuation metadata. continuationKind is "question" for chat and "action" for work; a chat continuation contains a question mark. When creating or updating work, send actual A2UI v0.9 messages. A new canvas normally sends createSurface, updateComponents, and updateDataModel. Use catalogId "urn:learn-anything:catalog:v1". All messages include version "v0.9".
+
+${A2UI_CATALOG_PROMPT}
 
 Never claim code ran unless browser execution reports it. Use save_milestone after meaningful progress. Project source is read-only; the learning directory is writable. Current degraded capabilities: ${(session.assembly?.degraded || []).join(", ") || "none"}.`;
 const state = createClaudeEventState();
@@ -135,6 +146,7 @@ await post(url, "/api/mentor/register", { mentorId, takeover: true }, token, men
 await post(url, "/api/mentor/ready", {}, token, mentorId);
 const sdkQuery = warmQuery.query(browserMessages(url, token, mentorId, abortController.signal, async (item) => {
   activeBrowserItem = item;
+  continuationPostedThisTurn = false;
   activeRunId = crypto.randomUUID();
   await post(url, "/api/mentor/event", { type: "RUN_STARTED", threadId: session.slug, runId: activeRunId }, token, mentorId);
 }));
@@ -159,6 +171,10 @@ try {
     }
     if (message.type === "result") {
       const runId = activeRunId || message.uuid || crypto.randomUUID();
+      if (message.subtype === "success" && !continuationPostedThisTurn) {
+        await post(url, "/api/a2ui", fallbackCanvasForClaudeItem(activeBrowserItem), token, mentorId);
+        continuationPostedThisTurn = true;
+      }
       if (message.subtype === "success") await post(url, "/api/mentor/event", { type: "RUN_FINISHED", threadId: session.slug, runId, outcome: { type: "success" } }, token, mentorId);
       else await post(url, "/api/mentor/event", { type: "RUN_ERROR", message: (message.errors || []).join("\n") || message.subtype, code: message.subtype }, token, mentorId);
       activeRunId = null;

@@ -85,8 +85,8 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
     if (competingResponse.status !== 409) throw new Error("Competing mentor was not rejected.");
 
     for (const [path, body] of [
-      ["/api/a2ui", { focus: "work", messages: [null] }],
-      ["/api/mentor/event", { type: "CUSTOM", name: "a2ui", value: { focus: "work", messages: [null] } }],
+      ["/api/a2ui", { focus: "work", messages: [null], continuation: { kind: "action", text: "Continue." } }],
+      ["/api/mentor/event", { type: "CUSTOM", name: "a2ui", value: { focus: "work", messages: [null], continuation: { kind: "action", text: "Continue." } } }],
     ]) {
       const malformed = await fetch(`${address.url}${path}`, {
         method: "POST",
@@ -122,7 +122,9 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
         { id: "smoke-draft", type: "code", language: "javascript", value: "", runnable: false },
       ],
     };
-    await jsonFetch(`${address.url}/api/a2ui`, { method: "POST", body: JSON.stringify(canvasEventValue(canvasFromStage(stage, stage.title))) }, mentorAuth);
+    const canvasPayload = canvasEventValue(canvasFromStage(stage, stage.title));
+    canvasPayload.continuation = { kind: "action", text: "Complete the smoke activity." };
+    await jsonFetch(`${address.url}/api/a2ui`, { method: "POST", body: JSON.stringify(canvasPayload) }, mentorAuth);
 
     await jsonFetch(`${address.url}/api/action`, {
       method: "POST",

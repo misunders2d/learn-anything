@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
-    <button id="mentor-rescue" type="button" aria-label="Return to mentor chat">Ask mentor</button>
+    <button id="mentor-rescue" type="button" aria-label="Ask mentor">Ask mentor</button>
     <div id="root"></div>
     <script>
       (() => {
@@ -17,15 +17,43 @@
         const rescue = document.getElementById("mentor-rescue");
         document.body.dataset.focus = "chat";
 
+        const chatHasPreservedWork = () => document.body.dataset.focus === "chat"
+          && document.body.dataset.hasWork === "1"
+          && document.body.dataset.returnWork !== "1";
+
+        const updateRescue = () => {
+          const returning = document.body.dataset.rescue === "1" || chatHasPreservedWork();
+          rescue.textContent = returning ? "Back to activity" : "Ask mentor";
+          rescue.setAttribute("aria-label", returning ? "Return to preserved activity" : "Ask mentor");
+        };
+
         rescue.addEventListener("click", () => {
           if (document.body.dataset.crashed === "1" || !root.firstElementChild) {
             window.location.reload();
             return;
           }
+          if (document.body.dataset.rescue === "1" || chatHasPreservedWork()) {
+            delete document.body.dataset.rescue;
+            delete document.body.dataset.rescueSurface;
+            document.body.dataset.returnWork = "1";
+            document.body.dataset.returnWorkSurface = document.body.dataset.surfaceId || "";
+            updateRescue();
+            window.dispatchEvent(new Event("learn-anything:return-work"));
+            return;
+          }
+          delete document.body.dataset.returnWork;
+          delete document.body.dataset.returnWorkSurface;
           document.body.dataset.rescue = "1";
           document.body.dataset.rescueSurface = document.body.dataset.surfaceId || "";
+          updateRescue();
           window.dispatchEvent(new Event("learn-anything:rescue-chat"));
         });
+
+        new MutationObserver(updateRescue).observe(document.body, {
+          attributes: true,
+          attributeFilter: ["data-focus", "data-has-work", "data-rescue", "data-return-work"],
+        });
+        updateRescue();
 
         const revealBeforeMount = () => {
           if (!root.firstElementChild) document.body.dataset.crashed = "1";

@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { A2UI_CATALOG_PROMPT } from "../../a2ui/prompt.mjs";
 import { mentorItemIsSuperseded } from "../codex-cli/turn-order.mjs";
 
 let activeProviderChild = null;
@@ -41,15 +42,16 @@ function mentorPrompt(topic, item, history) {
 The browser is the primary learning surface. Answer every browser event here; never tell the learner to continue in a terminal or another chat.
 Assume no prior knowledge until demonstrated. Explain before testing. Keep adapter and runtime details out of learner-facing text.
 React automatically to code results and answers captured by the browser. Do not ask the learner to repeat evidence.
-Use focus "chat" for explanation. Use focus "work" only for one prepared interactive activity.
+Use focus "chat" for a broad learner question or one genuine question that requires their answer. Do not switch to chat merely to acknowledge, explain, or debrief an observed activity result; keep that progression in focus "work" with one visible next action. Use a visual only for a named relationship: Figure for structure, Plot for quantitative change, Math for notation, and finite Params frames for a bounded state sequence. A control must immediately update a visible bound artifact; a plot illustrates rather than proves.
 When creating work, a2ui_jsonl must be newline-delimited A2UI v0.9 JSON with one message per line and the version string exactly "v0.9":
 {"version":"v0.9","createSurface":{"surfaceId":"lesson","catalogId":"urn:learn-anything:catalog:v1"}}
 {"version":"v0.9","updateComponents":{"surfaceId":"lesson","components":[{"id":"root","component":"Column","children":["intro","code"]},{"id":"intro","component":"Markdown","content":"A clear explanation"},{"id":"code","component":"Code","language":"java","value":"public class Main {}","runnable":true,"run":{"runner":"java"}}]}}
 {"version":"v0.9","updateDataModel":{"surfaceId":"lesson","path":"/","value":{"title":"A learner-facing title"}}}
-Supported components: Markdown, Callout, Code, Table, Passage, Figure, Params, Mermaid, Quiz, Checklist. Runnable Code components use run.runner javascript, python, java, rust, c, or sqlite. Keep a2ui_jsonl null when no canvas change is needed.
+	${A2UI_CATALOG_PROMPT}
+	Keep a2ui_jsonl null when no canvas change is needed.
 Return only one valid JSON object with exactly these keys:
-{"message":"learner-facing response","focus":"chat|work","a2ui_jsonl":null,"target_component_id":null,"target_quote":null}
-Use strings or null for the last three fields. Do not wrap JSON in markdown.
+{"message":"learner-facing response","focus":"chat|work","a2ui_jsonl":null,"target_component_id":null,"target_quote":null,"continuation_kind":"question|action","continuation":"one explicit learner-visible next step"}
+Use strings or null for a2ui_jsonl, target_component_id, and target_quote. continuation_kind must be "question" for chat and "action" for work; a chat continuation must contain a question mark. Do not wrap JSON in markdown.
 Recent conversation:
 ${transcript || "No previous messages."}
 Browser event:
@@ -64,12 +66,17 @@ export function parsePiResponse(stdout) {
   let response;
   try { response = JSON.parse(trimmed.slice(start, end + 1)); }
   catch (error) { throw new Error(`Pi mentor response was not valid JSON: ${error.message}`); }
-  const keys = ["message", "focus", "a2ui_jsonl", "target_component_id", "target_quote"];
+  const keys = ["message", "focus", "a2ui_jsonl", "target_component_id", "target_quote", "continuation_kind", "continuation"];
   if (typeof response.message !== "string" || !response.message.trim()) throw new Error("Pi mentor response has no message.");
   if (!["chat", "work"].includes(response.focus)) throw new Error("Pi mentor response has invalid focus.");
   for (const key of ["a2ui_jsonl", "target_component_id", "target_quote"]) {
     if (response[key] !== null && typeof response[key] !== "string") throw new Error(`Pi mentor response has invalid ${key}.`);
   }
+  if (!["question", "action"].includes(response.continuation_kind)) throw new Error("Pi mentor response has invalid continuation_kind.");
+  if (response.focus === "chat" && response.continuation_kind !== "question") throw new Error("Pi chat response requires a question continuation.");
+  if (response.focus === "work" && response.continuation_kind !== "action") throw new Error("Pi work response requires an action continuation.");
+  if (typeof response.continuation !== "string" || !response.continuation.trim()) throw new Error("Pi mentor response has no continuation.");
+  if (response.continuation_kind === "question" && !response.continuation.includes("?")) throw new Error("Pi chat continuation must contain a direct question.");
   return Object.fromEntries(keys.map((key) => [key, response[key] ?? null]));
 }
 
@@ -94,7 +101,7 @@ function runPi({ sessionDir, prompt }) {
 }
 
 async function preflightPi(sessionDir) {
-  const response = await runPi({ sessionDir, prompt: "Reply only with this JSON: {\"message\":\"pi-ready\",\"focus\":\"chat\",\"a2ui_jsonl\":null,\"target_component_id\":null,\"target_quote\":null}" });
+  const response = await runPi({ sessionDir, prompt: "Reply only with this JSON: {\"message\":\"pi-ready\",\"focus\":\"chat\",\"a2ui_jsonl\":null,\"target_component_id\":null,\"target_quote\":null,\"continuation_kind\":\"question\",\"continuation\":\"What would you like to learn?\"}" });
   if (response.message !== "pi-ready") throw new Error("Pi provider readiness check returned an unexpected response.");
 }
 
@@ -113,7 +120,11 @@ async function canvasPayload(url, token, response) {
     try { return JSON.parse(line); } catch (error) { throw new Error(`a2ui_jsonl line ${index + 1} is invalid JSON: ${error.message}`); }
   }) : [];
   if (response.focus === "work" && messages.length === 0 && !current.canvas?.activeSurfaceId) throw new Error("Pi selected work focus without a canvas.");
-  return { focus: response.focus, messages };
+  return {
+    focus: response.focus,
+    messages,
+    continuation: { kind: response.continuation_kind, text: response.continuation },
+  };
 }
 
 async function main() {
@@ -145,13 +156,23 @@ async function main() {
     await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_STARTED", threadId: session.slug, runId });
     try {
       const before = await requestJson(url, "/api/session", token);
-      const answer = await runPi({ sessionDir, prompt: mentorPrompt(session.topic, item, (before.transcript || []).slice(-12)) });
+      let answer = await runPi({ sessionDir, prompt: mentorPrompt(session.topic, item, (before.transcript || []).slice(-12)) });
+      let canvas = await canvasPayload(url, token, answer);
+      try {
+        await mentorPost(url, "/api/a2ui?validate=1", token, mentorId, canvas);
+      } catch (validationError) {
+        answer = await runPi({
+          sessionDir,
+          prompt: `${mentorPrompt(session.topic, item, (before.transcript || []).slice(-12))}\n\nYour previous structured response was rejected before the learner saw your claim: ${validationError.message}\nReturn one corrected response. Preserve the intended learner message, but make a2ui_jsonl valid. updateComponents merges by id, so every existing component must remain reachable from root unless you delete and recreate the surface.`,
+        });
+        canvas = await canvasPayload(url, token, answer);
+        await mentorPost(url, "/api/a2ui?validate=1", token, mentorId, canvas);
+      }
       const current = await requestJson(url, "/api/session", token);
       if (mentorItemIsSuperseded(item, current)) {
         await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_FINISHED", threadId: session.slug, runId, outcome: { type: "cancelled", reason: "newer_learner_message" } });
         continue;
       }
-      const canvas = await canvasPayload(url, token, answer);
       const learnerContext = item.type === "user_message" && item.message?.source === "work" ? item.message.context : null;
       const executionContext = item.type === "execution_result" && item.componentId ? { componentId: item.componentId, label: `${item.language || "code"} code` } : null;
       const context = answer.target_component_id ? { componentId: answer.target_component_id, ...(answer.target_quote ? { quote: answer.target_quote } : {}) } : learnerContext || executionContext;

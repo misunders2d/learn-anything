@@ -146,6 +146,79 @@
         "Runnable Java examples expose the Run action and execute through javac/java.",
         "The server stops after the final browser tab closes or the owning agent exits."
       ]
+    },
+    {
+      "id": 14,
+      "prompt": "I am new to Java. Show me how references, object lifetime, and garbage collection relate, but do not turn this into a coding exam.",
+      "expected_output": "Mentor begins with a concrete object-and-reference model, then uses a bounded visual state sequence or table before offering a small Java activity.",
+      "files": [],
+      "expectations": [
+        "The first explanation is in plain language and does not require code.",
+        "If a parameter control is shown, moving it immediately changes a visible Figure or Table rather than only changing a number.",
+        "The mentor states that garbage-collection timing is nondeterministic and does not present a teaching trace as a runtime guarantee.",
+        "Any later runnable artifact contains Java only, with execution scaffolding hidden."
+      ]
+    },
+    {
+      "id": 15,
+      "prompt": "Teach me quantum interference. I know algebra but not quantum mechanics. Let me vary phase and see what changes, without making me write simulation code.",
+      "expected_output": "Mentor explains the setup intuitively, asks for a prediction, then presents a labeled phase control bound to mathematical notation and a probability plot that updates immediately.",
+      "files": [],
+      "expectations": [
+        "The learner sees no Python, JavaScript, wrapper, or terminal console.",
+        "Changing phase immediately changes a visible Plot or Figure and any paired Math notation without waiting for a mentor reply.",
+        "The surface labels the modeled quantity, setup or basis, units where relevant, and simplifying assumptions.",
+        "The mentor describes the plot as an intuition-building model, not a proof or literal picture of a wavefunction."
+      ]
+    },
+    {
+      "id": 16,
+      "prompt": "Help me understand why the derivative is the slope of a tangent. I am comfortable with algebra but visual intuition would help.",
+      "expected_output": "Mentor connects plain language, safe mathematical notation, and a labeled graph whose tangent state changes locally with a bounded control.",
+      "files": [],
+      "expectations": [
+        "Math notation is paired with a plain-language explanation rather than presented alone.",
+        "A control changes the visible graph and notation immediately; an isolated value-only slider is not accepted as interactive.",
+        "Axes and plotted series are labeled and the plotted values remain available in an accessible table.",
+        "The mentor separates visual intuition from the formal limiting argument."
+      ]
+    },
+    {
+      "id": 17,
+      "prompt": "I am an experienced Java developer. Teach me one subtle concurrency failure using an interleaving I can step through.",
+      "expected_output": "Mentor skips Java basics and presents a concise, finite state trace tied to authentic Java code and one concrete concurrency invariant.",
+      "files": [],
+      "expectations": [
+        "The finite control updates the visible trace locally without creating a mentor turn for each step.",
+        "The learner-facing code is Java and any harness remains hidden.",
+        "The mentor says the displayed interleaving is one possible schedule, not a guarantee that the runtime will choose it.",
+        "The activity names the invariant or failure being demonstrated rather than merely animating state."
+      ]
+    },
+    {
+      "id": 18,
+      "prompt": "Teach me how a simple neural network works from scratch. I am a beginner and want to understand one neuron before writing code.",
+      "expected_output": "Mentor begins with one concrete weighted-sum prediction, then lets the learner vary a bounded input or weight and immediately see the equation, output, and loss change before introducing code.",
+      "files": [],
+      "expectations": [
+        "The opening uses plain language and one neuron; it does not begin with framework code, matrices, or a coding test.",
+        "Any parameter control immediately updates visible Math and a Plot or Table without waiting for a mentor response.",
+        "The surface labels input, weight, prediction, target, and loss and explains what each means.",
+        "The mentor distinguishes the small teaching model from a full neural network and asks for a prediction before revealing the next state.",
+        "Code appears only after the learner understands the forward calculation or explicitly asks to implement it."
+      ]
+    },
+    {
+      "id": 19,
+      "prompt": "Keep teaching after I run the code. I should not have to hunt above the editor for a new instruction or type 'continue' after a vague mentor message.",
+      "expected_output": "Observed activity feedback remains with the preserved work surface, the next task scrolls into view, and every mentor turn ends with one explicit action or direct question.",
+      "files": [],
+      "expectations": [
+        "Code and canvas-action feedback stays in work focus while an activity exists.",
+        "A changed task instruction is brought into view instead of appearing above the learner's scroll position.",
+        "When chat hides existing work, Back to activity remains visible.",
+        "The mentor advances without asking for a meaningless 'continue'; if learner input is required, it asks one direct question."
+      ]
     }
   ]
 }

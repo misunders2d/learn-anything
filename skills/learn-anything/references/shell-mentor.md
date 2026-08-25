@@ -14,10 +14,12 @@ Command waits for next learner message. After reasoning, send mentor text:
 node <kit-root>/scripts/mentor.mjs text --url <server-url> --token <access-token> --mentor-id <stable-id> --file <response.txt>
 ```
 
-Update stage:
+Update browser canvas:
 
 ```bash
-node <kit-root>/scripts/mentor.mjs stage --url <server-url> --token <access-token> --mentor-id <stable-id> --file <stage.json>
+node <kit-root>/scripts/mentor.mjs canvas --url <server-url> --token <access-token> --mentor-id <stable-id> --file <payload.json>
 ```
+
+`payload.json` uses `{ "focus": "chat|work", "messages": [...], "continuation": { "kind": "question|action", "text": "..." } }`. Chat requires a direct question; work requires a concrete action.
 
 Repeat `next` without `--takeover` only while actively supervising learning session. Stop when learner ends session or server disappears. Per-turn delivery is degraded mode; browser must show that status.

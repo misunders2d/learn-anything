@@ -9,12 +9,16 @@ test("Pi mentor response parser accepts the exact browser contract", () => {
     a2ui_jsonl: null,
     target_component_id: null,
     target_quote: null,
+    continuation_kind: "question",
+    continuation: "What should we explore next?",
   })), {
     message: "Ready in the browser.",
     focus: "chat",
     a2ui_jsonl: null,
     target_component_id: null,
     target_quote: null,
+    continuation_kind: "question",
+    continuation: "What should we explore next?",
   });
 });
 
@@ -26,5 +30,14 @@ test("Pi mentor response parser rejects prose and invalid focus", () => {
     a2ui_jsonl: null,
     target_component_id: null,
     target_quote: null,
+    continuation_kind: "question",
+    continuation: "What should we explore next?",
   })), /invalid focus/);
+  assert.throws(() => parsePiResponse(JSON.stringify({
+    message: "No next step",
+    focus: "work",
+    a2ui_jsonl: null,
+    target_component_id: null,
+    target_quote: null,
+  })), /invalid continuation_kind/);
 });

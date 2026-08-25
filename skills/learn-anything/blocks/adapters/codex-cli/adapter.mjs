@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { A2UI_CATALOG_PROMPT } from "../../a2ui/prompt.mjs";
 import { mentorItemIsSuperseded } from "./turn-order.mjs";
 
 const adapterDir = dirname(fileURLToPath(import.meta.url));
@@ -72,26 +73,18 @@ Assume no prior knowledge until the learner demonstrates it. Calibrate from thei
 
 Browser events are your observation of the learner. React automatically to submitted code, execution output, errors, and interactive answers. Unsent drafts persist without creating a mentor turn. Never ask the learner to repeat or check off evidence the browser already captured. Use checklists only for external actions the workspace cannot observe.
 
-Match medium to subject. For humanities and conceptual science, start with one concrete anchor, a short explanation, and a meaningful learner question; do not dump a field survey, force code, or open a stage merely to use it. For a humanities beginner, keep the first turn to that anchor, why it matters, and one choice or question—do not list periods, authors, or genres unless the learner asks. Use a passage, comparison, timeline, diagram, or thought experiment only when it advances the current idea. For demonstrated technical experts, skip basic ceremony and move to a realistic example or failure mode.
+Match medium to subject. For humanities and conceptual science, start with one concrete anchor, a short explanation, and a meaningful learner question; do not dump a field survey, force code, or open a stage merely to use it. For a humanities beginner, keep the first turn to that anchor, why it matters, and one choice or question—do not list periods, authors, or genres unless the learner asks. Use a passage, comparison, timeline, diagram, or thought experiment only when it advances the current idea. Use Plot for a quantitative relationship, Math when notation itself matters, and finite Params frames for a bounded state sequence. A control is useful only when it immediately changes a visible bound artifact. A plot illustrates a model; it does not prove it. For demonstrated technical experts, skip basic ceremony and move to a realistic example or failure mode.
 
-The browser has one primary mode. Use focus "chat" for explanation, questions, and debrief. Use focus "work" only after your message has prepared one clear interactive activity. An inline clarification from a work canvas is different: answer concisely with focus "work" and a2ui_jsonl null so the current editor, task, and output remain visible.
+The browser has one primary mode. Use focus "chat" for a broad learner question or one genuine question that requires their answer. Do not switch to chat merely to acknowledge, explain, or debrief an observed activity result; keep that progression in focus "work" with one visible next action. An inline clarification from a work canvas stays in focus "work" with a2ui_jsonl null so the current editor, task, and output remain visible.
 
 When creating or updating work, a2ui_jsonl must contain newline-delimited A2UI v0.9 JSON messages. Use the exact protocol envelope with one message type per line:
 {"version":"v0.9","createSurface":{"surfaceId":"lesson","catalogId":"urn:learn-anything:catalog:v1"}}
 {"version":"v0.9","updateComponents":{"surfaceId":"lesson","components":[{"id":"root","component":"Column","children":["intro"]},{"id":"intro","component":"Markdown","content":"A clear explanation"}]}}
 {"version":"v0.9","updateDataModel":{"surfaceId":"lesson","path":"/","value":{"title":"A learner-facing title"}}}
 
-The root component must be a Column or Row and reference children by id. Supported learning-catalog component names are Markdown, Callout, Code, Table, Passage, Figure, Params, Mermaid, Quiz, and Checklist. Their properties are:
-- Markdown: {"id":"...","component":"Markdown","content":"..."}
-- Callout: {"id":"...","component":"Callout","tone":"info|success|warning","title":"...","content":"..."}
-- Code: {"id":"...","component":"Code","language":"any learner-facing syntax such as sql|python|java|rust|latex","value":"only the learner-facing artifact","runnable":true,"run":{"runner":"javascript|python|java|rust|c|sqlite","setup":"optional hidden fixture"}}
-- Table: {"id":"...","component":"Table","caption":"...","columns":["..."],"rows":[["..."]]}
-- Passage: {"id":"...","component":"Passage","text":"...","source":"...","annotations":[{"quote":"...","note":"..."}]}
-- Figure: {"id":"...","component":"Figure","mermaid":"flowchart LR ...","caption":"...","callouts":[{"label":"..."}]}
-- Params: {"id":"...","component":"Params","title":"...","controls":[{"id":"x","label":"...","min":0,"max":10,"step":1,"value":5}]}
-- Mermaid: {"id":"...","component":"Mermaid","source":"flowchart LR ..."}
-- Quiz: {"id":"...","component":"Quiz","question":"...","options":[{"id":"a","label":"..."}]}
-- Checklist: {"id":"...","component":"Checklist","items":[{"id":"x","label":"...","done":false}]}
+${A2UI_CATALOG_PROMPT}
+
+Set continuation_kind to "question" for chat and "action" for work. continuation is the exact short question or action the learner will see; chat continuation must contain a question mark.
 
 Keep implementation scaffolding backstage. The learner must see and edit the subject's own artifact, never a wrapper chosen only because a host runner exists. Put hidden fixtures in Code.run.setup. Prefer structured subject feedback beside its cause.
 `;
@@ -185,7 +178,11 @@ async function normalizeCanvasPayload(url, token, response) {
   if (response.focus === "work" && messages.length === 0 && !current.canvas?.activeSurfaceId) {
     throw new Error("Codex selected work focus without an existing or replacement A2UI surface.");
   }
-  return { focus: response.focus, messages };
+  return {
+    focus: response.focus,
+    messages,
+    continuation: { kind: response.continuation_kind, text: response.continuation },
+  };
 }
 
 const args = process.argv.slice(2);
@@ -226,11 +223,23 @@ while (!stopping) {
   const runId = randomUUID();
   await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_STARTED", threadId: session.slug, runId });
   try {
-    const result = await runCodex({
+    let result = await runCodex({
       sessionDir,
       threadId,
       prompt: mentorPrompt(session.topic, item),
     });
+    let canvasPayload = await normalizeCanvasPayload(url, token, result.response);
+    try {
+      await mentorPost(url, "/api/a2ui?validate=1", token, mentorId, canvasPayload);
+    } catch (validationError) {
+      result = await runCodex({
+        sessionDir,
+        threadId: result.threadId || threadId,
+        prompt: `Your previous A2UI update was rejected before the learner saw your claim: ${validationError.message}\nReturn one corrected structured response now. Preserve the intended learner message, but make a2ui_jsonl valid. updateComponents merges by id, so every existing component must remain reachable from root unless you delete and recreate the surface.`,
+      });
+      canvasPayload = await normalizeCanvasPayload(url, token, result.response);
+      await mentorPost(url, "/api/a2ui?validate=1", token, mentorId, canvasPayload);
+    }
     if (result.threadId && result.threadId !== threadId) {
       threadId = result.threadId;
       await mentorPost(url, "/api/mentor/event", token, mentorId, {
@@ -249,7 +258,6 @@ while (!stopping) {
       });
       continue;
     }
-    const canvasPayload = await normalizeCanvasPayload(url, token, result.response);
     const learnerContext = item.type === "user_message" && item.message?.source === "work" ? item.message.context : null;
     const executionContext = item.type === "execution_result" && item.componentId ? { componentId: item.componentId, label: `${item.language || "code"} code` } : null;
     const responseContext = result.response.target_component_id

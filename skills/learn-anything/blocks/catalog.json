@@ -12,11 +12,11 @@
     },
     {
       "id": "web.a2ui-canvas",
-      "version": 1,
+      "version": 2,
       "kind": "frontend",
       "path": "blocks/web/dist",
       "requires": ["built-web-assets"],
-      "provides": ["mentor-stream", "a2ui-v0.9-canvas", "subject-editor", "structured-table", "annotated-passage", "figure", "parameter-controls", "quiz-actions", "diagram-rendering"],
+      "provides": ["mentor-stream", "a2ui-v0.9-canvas", "subject-editor", "structured-table", "annotated-passage", "figure", "math-notation", "structured-plot", "reactive-parameter-frames", "parameter-controls", "quiz-actions", "diagram-rendering"],
       "smokeCheck": "GET / and GET /app.js return 200"
     },
     {

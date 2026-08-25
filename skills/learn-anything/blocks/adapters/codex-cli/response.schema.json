@@ -2,12 +2,14 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["message", "focus", "a2ui_jsonl", "target_component_id", "target_quote"],
+  "required": ["message", "focus", "a2ui_jsonl", "target_component_id", "target_quote", "continuation_kind", "continuation"],
   "properties": {
     "message": { "type": "string", "minLength": 1 },
     "focus": { "type": "string", "enum": ["chat", "work"] },
     "a2ui_jsonl": { "type": ["string", "null"] },
     "target_component_id": { "type": ["string", "null"] },
-    "target_quote": { "type": ["string", "null"] }
+    "target_quote": { "type": ["string", "null"] },
+    "continuation_kind": { "type": "string", "enum": ["question", "action"] },
+    "continuation": { "type": "string", "minLength": 1 }
   }
 }

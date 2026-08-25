@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createClaudeEventState, mapClaudeMessage } from "../skills/learn-anything/blocks/adapters/claude-agent-sdk/events.mjs";
+import { createClaudeEventState, fallbackCanvasForClaudeItem, mapClaudeMessage } from "../skills/learn-anything/blocks/adapters/claude-agent-sdk/events.mjs";
+
+test("Claude inline work fallback preserves work and publishes a concrete action", () => {
+  const payload = fallbackCanvasForClaudeItem({ type: "user_message", message: { source: "work" } });
+  assert.equal(payload.focus, "work");
+  assert.deepEqual(payload.messages, []);
+  assert.equal(payload.continuation.kind, "action");
+  assert.match(payload.continuation.text, /unfinished step/i);
+});
 
 test("Claude partial text maps to AG-UI text lifecycle", () => {
   const state = createClaudeEventState();
