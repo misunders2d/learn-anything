@@ -210,11 +210,12 @@
     },
     {
       "id": 19,
-      "prompt": "Keep teaching after I run the code. I should not have to hunt above the editor for a new instruction or type 'continue' after a vague mentor message.",
-      "expected_output": "Observed activity feedback remains with the preserved work surface, the next task scrolls into view, and every mentor turn ends with one explicit action or direct question.",
+      "prompt": "Let me run and change the code repeatedly without interrupting me. When I am ready, I will submit the current code and latest result to the mentor; then keep teaching without making me hunt above the editor or type 'continue'.",
+      "expected_output": "Ordinary runs remain local, explicit code submission wakes the mentor, feedback remains with the preserved work surface, and every mentor turn ends with one explicit action or direct question.",
       "files": [],
       "expectations": [
-        "Code and canvas-action feedback stays in work focus while an activity exists.",
+        "Run can be used repeatedly without creating mentor turns; Submit to mentor sends the current code and latest result or error.",
+        "Submitted-code and canvas-action feedback stays in work focus while an activity exists.",
         "A changed task instruction is brought into view instead of appearing above the learner's scroll position.",
         "When chat hides existing work, Back to activity remains visible.",
         "The mentor advances without asking for a meaningless 'continue'; if learner input is required, it asks one direct question."

@@ -50,6 +50,62 @@ test("surface direction is validated and persisted in the A2UI data model", () =
   }], { focus: "work" }), /direction must be ltr, rtl, or auto/i);
 });
 
+test("code runs stay local until the learner submits the latest result", async () => {
+  const { root, runtime, address } = await fixture();
+  const mentorId = "code-submit-mentor";
+  try {
+    await request(address, "/api/mentor/register", {
+      method: "POST",
+      body: JSON.stringify({ mentorId, takeover: true }),
+    });
+    await request(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
+    await request(address, "/api/a2ui", {
+      method: "POST",
+      body: JSON.stringify({
+        focus: "work",
+        continuation: { kind: "action", text: "Experiment, then submit the result when ready." },
+        messages: [
+          { version: "v0.9", createSurface: { surfaceId: "experiment", catalogId: "urn:learn-anything:catalog:v1" } },
+          { version: "v0.9", updateComponents: { surfaceId: "experiment", components: [
+            { id: "root", component: "Column", children: ["code"] },
+            { id: "code", component: "Code", language: "javascript", value: "console.log('one')", runnable: true, run: { runner: "javascript" } },
+          ] } },
+          { version: "v0.9", updateDataModel: { surfaceId: "experiment", path: "/", value: { title: "Experiment" } } },
+        ],
+      }),
+    }, mentorId);
+
+    let mentorReceived = false;
+    const nextMentorItem = request(address, `/api/mentor/next?mentorId=${mentorId}`).then((value) => {
+      mentorReceived = true;
+      return value;
+    });
+    const run = await request(address, "/api/run", {
+      method: "POST",
+      body: JSON.stringify({ componentId: "code", language: "javascript", code: "console.log('two')" }),
+    });
+    assert.equal(run.response.status, 200);
+    assert.equal(run.body.stdout, "two\n");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(mentorReceived, false);
+
+    const submit = await request(address, "/api/action", {
+      method: "POST",
+      body: JSON.stringify({ action: "submit_code", componentId: "code", code: "console.log('two')" }),
+    });
+    assert.equal(submit.response.status, 202);
+    const delivered = await nextMentorItem;
+    assert.equal(delivered.response.status, 200);
+    assert.equal(delivered.body.type, "execution_result");
+    assert.equal(delivered.body.submitted, true);
+    assert.equal(delivered.body.code, "console.log('two')");
+    assert.equal(delivered.body.result.stdout, "two\n");
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("server persists real A2UI v0.9 surface messages", async () => {
   const { root, constructed, runtime, address } = await fixture();
   const mentorId = "a2ui-test-mentor";

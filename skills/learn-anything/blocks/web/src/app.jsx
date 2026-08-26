@@ -183,7 +183,7 @@ function latestWorkExchange(messages) {
   return { question, answer };
 }
 
-function CodeEditor({ language, value, onChange, onSelect }) {
+function CodeEditor({ language, value, onChange }) {
   const rows = Math.max(4, Math.min(18, value.split(/\r?\n/).length + 2));
   return <textarea name={`${language}-editor`} aria-label={`${language} editor`} rows={rows} className="code-fallback" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => {
     if (event.key !== "Tab") return;
@@ -195,9 +195,6 @@ function CodeEditor({ language, value, onChange, onSelect }) {
       input.focus();
       input.setSelectionRange(next.selectionStart, next.selectionEnd);
     });
-  }} onSelect={(event) => {
-    const quote = event.currentTarget.value.slice(event.currentTarget.selectionStart, event.currentTarget.selectionEnd).trim();
-    if (quote) onSelect?.(quote);
   }} />;
 }
 
@@ -215,11 +212,15 @@ function DataTable({ columns = [], rows = [], caption }) {
   );
 }
 
-function CodeBlock({ component, onContext }) {
+function CodeBlock({ component, onSubmitToMentor }) {
   const draftKey = `code:${component._surfaceId || "surface"}:${component.id || "editor"}`;
   const [code, setCode] = useState(() => loadDraft(window.localStorage, draftKey, component.value || ""));
   const [running, setRunning] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [submitError, setSubmitError] = useState("");
   const [result, setResult] = useState(component.lastResult || null);
+  const [lastRunCode, setLastRunCode] = useState(() => component.lastResult ? component.value || "" : null);
   const saveTimer = useRef(null);
   const resultRef = useRef(null);
 
@@ -252,43 +253,69 @@ function CodeBlock({ component, onContext }) {
 
   function updateCode(value) {
     setCode(value);
+    setSubmitted(false);
+    setSubmitError("");
     saveDraft(window.localStorage, draftKey, value);
     scheduleSave(value);
   }
 
   async function run() {
+    const codeAtRun = code;
     setRunning(true);
+    setSubmitted(false);
+    setSubmitError("");
     setResult(null);
     try {
       const nextResult = await api("/api/run", {
         method: "POST",
-        body: JSON.stringify({ componentId: component.id || null, language: component.language || "javascript", code }),
+        body: JSON.stringify({ componentId: component.id || null, language: component.language || "javascript", code: codeAtRun }),
       });
       setResult(nextResult);
+      setLastRunCode(codeAtRun);
     } catch (error) {
       setResult({ error: error.message });
+      setLastRunCode(null);
     } finally {
       setRunning(false);
     }
   }
 
+  async function submit() {
+    if (!result || code !== lastRunCode || submitting) return;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await onSubmitToMentor({ componentId: component.id, code });
+      setSubmitted(true);
+    } catch (error) {
+      setSubmitError(error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const canSubmit = Boolean(result && code === lastRunCode && !running);
   return (
     <section className="playground-surface overflow-hidden">
       <div className="surface-toolbar">
         <span>{component.language || "text"}</span>
-        {component.runnable !== false && (
-          <button onClick={run} disabled={running}>
+        {component.runnable !== false && <div className="surface-actions">
+          <button onClick={run} disabled={running || submitting}>
             {running ? "Running…" : "Run"}
           </button>
-        )}
+          <button className="submit-code" onClick={submit} disabled={!canSubmit || submitting || submitted} title={!canSubmit ? "Run the current code before submitting it" : "Send this code and its latest result to the mentor"}>
+            {submitting ? "Submitting…" : submitted ? "Submitted" : "Submit to mentor"}
+          </button>
+        </div>}
       </div>
-      <div className="editor-shell"><CodeEditor language={component.language || "javascript"} value={code} onChange={updateCode} onSelect={(quote) => onContext?.({ componentId: component.id, label: `${component.language || "code"} code`, quote })} /></div>
+      <div className="editor-shell"><CodeEditor language={component.language || "javascript"} value={code} onChange={updateCode} /></div>
       {result && <div ref={resultRef} className="execution-result" aria-live="polite">
         {result.table?.columns?.length
           ? <DataTable columns={result.table.columns} rows={result.table.rows} caption={`Query result · ${result.table.rowCount} row${result.table.rowCount === 1 ? "" : "s"}`} />
           : <pre className={`console-output ${result.error || result.exitCode ? "text-red-300" : "text-slate-200"}`}>{result.error || result.stderr || result.stdout || "Completed."}</pre>}
         {!result.error && <div className="run-meta">{result.durationMs}ms{result.table?.truncatedRows ? " · first 500 rows" : ""}</div>}
       </div>}
+      {submitError && <p className="submit-error">Could not submit: {submitError}</p>}
     </section>
   );
 }
@@ -408,13 +435,13 @@ function ParameterBlock({ component, onParameterChange }) {
   return <section className="parameter-surface">{component.title && <h3>{component.title}</h3>}{(component.controls || []).map((control) => <label key={control.id}><span>{control.label}</span><output>{control.value}{control.unit ? ` ${control.unit}` : ""}</output><input name={control.id} aria-label={control.label} type="range" min={control.min} max={control.max} step={control.step || 1} value={control.value} onChange={(event) => change(control, event.currentTarget.value)} onPointerUp={(event) => change(control, event.currentTarget.value, true)} onKeyUp={(event) => { if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) change(control, event.currentTarget.value, true); }} /></label>)}</section>;
 }
 
-function StageComponent({ component, onContext, onParameterChange }) {
+function StageComponent({ component, onContext, onParameterChange, onSubmitToMentor }) {
   if (component.type === "markdown") return <article className="prose-surface"><Markdown content={component.content} /></article>;
   if (component.type === "callout") {
     const tone = component.tone === "success" ? "is-success" : component.tone === "warning" ? "is-warning" : "";
     return <section className={`callout-surface ${tone}`}><h3>{component.title}</h3><Markdown content={component.content} /></section>;
   }
-  if (component.type === "code") return <CodeBlock component={component} onContext={onContext} />;
+  if (component.type === "code") return <CodeBlock component={component} onSubmitToMentor={onSubmitToMentor} />;
   if (component.type === "table") return <DataTable columns={component.columns} rows={component.rows} caption={component.caption} />;
   if (component.type === "passage") return <PassageBlock component={component} />;
   if (component.type === "figure") return <FigureBlock component={component} />;
@@ -455,24 +482,21 @@ function bindComponent(component, dataModel) {
   return Object.fromEntries(Object.entries(component).map(([key, value]) => [key, resolveDataBinding(value, dataModel)]));
 }
 
-function A2uiNode({ componentId, surface, onContext, onParameterChange, replyFor }) {
+function A2uiNode({ componentId, surface, onContext, onParameterChange, onSubmitToMentor, replyFor }) {
   const source = surface?.components?.[componentId];
   if (!source) return <section className="activity-error">Canvas component “{componentId}” is missing.</section>;
   const component = bindComponent(source, surface.dataModel || {});
   if (component.component === "Column" || component.component === "Row") {
     const children = Array.isArray(component.children) ? component.children : [];
-    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} onParameterChange={onParameterChange} replyFor={replyFor} />)}</div>;
+    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} replyFor={replyFor} />)}</div>;
   }
   const normalized = { ...component, _surfaceId: surface.id, type: String(component.component || "unknown").toLowerCase() };
   const label = component.title || component.question || String(component.component || "component").toLowerCase();
   const reply = replyFor(component.id);
   return (
-    <div data-component-id={component.id || ""} onMouseUp={() => {
-      const quote = window.getSelection()?.toString().trim();
-      if (quote && component.id) onContext({ componentId: component.id, label, quote: quote.slice(0, 2000) });
-    }} className="stage-component">
+    <div data-component-id={component.id || ""} className="stage-component">
       <ErrorBoundary>
-        <StageComponent component={normalized} onContext={onContext} onParameterChange={onParameterChange} />
+        <StageComponent component={normalized} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} />
       </ErrorBoundary>
       <button type="button" onClick={() => onContext({ componentId: component.id, label })} className="ask-component">Ask about this</button>
       {reply && <aside className="anchored-mentor-note">
@@ -493,6 +517,32 @@ function applyCanvasPayload(current, payload) {
   return next;
 }
 
+function selectionDetails(event) {
+  const target = event.target;
+  let text = "";
+  let rect = null;
+  if ((target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) && target.selectionEnd > target.selectionStart) {
+    text = target.value.slice(target.selectionStart, target.selectionEnd).trim();
+    rect = target.getBoundingClientRect();
+  } else {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.rangeCount) {
+      text = selection.toString().trim();
+      rect = selection.getRangeAt(0).getBoundingClientRect();
+    }
+  }
+  if (!text || !rect) return null;
+  const native = event.nativeEvent || event;
+  const pointerX = native.type === "mouseup" && native.clientX > 0 ? native.clientX : rect.left + rect.width / 2;
+  const showBelow = rect.top < 64;
+  return {
+    text: text.slice(0, 2000),
+    left: Math.max(72, Math.min(window.innerWidth - 72, pointerX)),
+    top: showBelow ? rect.bottom + 8 : rect.top - 8,
+    below: showBelow,
+  };
+}
+
 function App() {
   const [topic, setTopic] = useState("Learning workspace");
   const [messages, setMessages] = useState([]);
@@ -507,6 +557,7 @@ function App() {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const [workContext, setWorkContext] = useState(null);
+  const [selectionMenu, setSelectionMenu] = useState(null);
   const [mentorState, setMentorState] = useState("idle");
   const partial = useRef(new Map());
   const rescueQuestionPending = useRef(false);
@@ -515,6 +566,7 @@ function App() {
   const previousTaskKey = useRef("");
   const messageEndRef = useRef(null);
   const composerRef = useRef(null);
+  const workComposerRef = useRef(null);
   const stageScrollRef = useRef(null);
   const previousFocus = useRef(null);
 
@@ -613,6 +665,21 @@ function App() {
     };
     window.addEventListener("learn-anything:return-work", returnToWork);
     return () => window.removeEventListener("learn-anything:return-work", returnToWork);
+  }, []);
+
+  useEffect(() => {
+    const dismiss = (event) => {
+      if (!event.target.closest?.(".selection-actions")) setSelectionMenu(null);
+    };
+    const escape = (event) => {
+      if (event.key === "Escape") setSelectionMenu(null);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
   }, []);
 
   useEffect(() => {
@@ -716,6 +783,40 @@ function App() {
     saveDraft(window.localStorage, source, value);
   }
 
+  function captureSelection(event) {
+    if (event.target.closest?.(".selection-actions")) return;
+    setSelectionMenu(selectionDetails(event));
+  }
+
+  async function copySelection() {
+    if (!selectionMenu?.text) return;
+    try {
+      await navigator.clipboard.writeText(selectionMenu.text);
+      setSelectionMenu(null);
+    } catch {
+      setSendError("Could not copy the selected text.");
+    }
+  }
+
+  function explainSelection() {
+    if (!selectionMenu?.text) return;
+    const source = document.body.dataset.rescue === "1"
+      ? "chat"
+      : (focus === "work" || document.body.dataset.returnWork === "1") ? "work" : "chat";
+    updateComposerDraft(source, `Explain "${selectionMenu.text}"`);
+    if (source === "work") setWorkContext(null);
+    setSelectionMenu(null);
+    requestAnimationFrame(() => (source === "work" ? workComposerRef.current : composerRef.current)?.focus());
+  }
+
+  async function submitCode({ componentId, code }) {
+    await api("/api/action", {
+      method: "POST",
+      body: JSON.stringify({ action: "submit_code", componentId, code }),
+    });
+    setMentorState("waiting");
+  }
+
   async function sendMessage(source = "chat") {
     const currentDraft = source === "work" ? workDraft : chatDraft;
     const text = currentDraft.trim();
@@ -778,8 +879,12 @@ function App() {
   const emptyConversation = messages.length === 0;
 
   return (
-    <main className="workspace" data-focus={focus}>
+    <main className="workspace" data-focus={focus} onMouseUp={captureSelection} onKeyUp={captureSelection}>
       <ConnectionIssue issue={connectionIssue} />
+      {selectionMenu && <div className="selection-actions" role="toolbar" aria-label="Actions for selected text" data-below={selectionMenu.below ? "1" : "0"} style={{ left: selectionMenu.left, top: selectionMenu.top }} onPointerDown={(event) => event.preventDefault()}>
+        <button type="button" onClick={copySelection}>Copy</button>
+        <button type="button" onClick={explainSelection}>Explain</button>
+      </div>}
       <section className={`mentor-pane ${emptyConversation ? "is-empty" : "has-conversation"}`}>
         <header className="app-header">
           <div className="brand-lockup"><span className="brand-mark">L</span><span>Learn anything</span></div>
@@ -819,7 +924,7 @@ function App() {
               <Markdown content={workMentorLead.content} />
             </section>}
             {surface?.components?.root
-              ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} onParameterChange={updateParameter} replyFor={replyFor} />
+              ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} onParameterChange={updateParameter} onSubmitToMentor={submitCode} replyFor={replyFor} />
               : null}
             {workExchange && !workExchange.answer?.context?.componentId && <section className="work-mentor-reply">
               <div className="anchored-note-label">Your question</div>
@@ -837,7 +942,7 @@ function App() {
               {mentorState === "responding" && <><span className="thinking-dot" />Adding guidance… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}
             </div>
             <div className="work-question-control">
-              <textarea name="work-question" value={workDraft} onChange={(event) => updateComposerDraft("work", event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage("work"); } }} rows="1" aria-label="Question about this activity" placeholder="Ask about this activity…" className="work-question-input" />
+              <textarea ref={workComposerRef} name="work-question" value={workDraft} onChange={(event) => updateComposerDraft("work", event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage("work"); } }} rows="1" aria-label="Question about this activity" placeholder="Ask about this activity…" className="work-question-input" />
               <button type="submit" disabled={!workDraft.trim() || sending}>Ask</button>
             </div>
             {workContext && <div className="context-chip">

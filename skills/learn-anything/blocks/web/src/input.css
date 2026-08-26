@@ -152,6 +152,9 @@ body[data-return-work="1"] .workspace .stage-pane { opacity: 1; transform: none;
 .composer-control button:hover, .work-question-control button:hover, .surface-toolbar button:hover { background: var(--accent-hover); }
 .composer-control button:active, .work-question-control button:active, .surface-toolbar button:active { transform: translateY(1px); }
 .composer-control button:disabled, .work-question-control button:disabled, .surface-toolbar button:disabled { cursor: default; opacity: 0.35; }
+.surface-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
+.surface-toolbar .submit-code { border: 1px solid #596171; background: transparent; color: #eef1f6; }
+.surface-toolbar .submit-code:hover:not(:disabled) { border-color: #88a7ff; background: #262b36; }
 .composer-hint { margin: 0.55rem 0 0 0.35rem; color: var(--faint); font-size: 0.72rem; }
 .send-error { margin: 0.5rem 0 0; color: var(--danger); font-size: 0.78rem; }
 
@@ -188,6 +191,7 @@ body[data-return-work="1"] .workspace .stage-pane { opacity: 1; transform: none;
 .execution-result .data-surface tbody tr:hover { background: rgba(126, 157, 255, 0.08); }
 .execution-result .console-output { margin: 0; max-height: 17rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.8rem; }
 .run-meta { margin-top: 0.55rem; color: #7f8898; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.68rem; }
+.submit-error { margin: 0; border-top: 1px solid #31343c; background: #111319; padding: 0.75rem 1rem; color: #ffaaa3; font-size: 0.78rem; }
 
 .data-surface { overflow: hidden; }
 .data-surface figcaption { margin-bottom: 0.6rem; color: var(--muted); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -255,6 +259,11 @@ body[data-return-work="1"] .workspace .stage-pane { opacity: 1; transform: none;
 .work-question-control button { border-radius: 0.65rem; }
 .context-chip { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 0.55rem; color: var(--accent-hover); font-size: 0.75rem; }
 .context-chip button { border: 0; background: transparent; color: var(--muted); font-size: 0.75rem; }
+
+.selection-actions { position: fixed; z-index: 1400; display: flex; transform: translate(-50%, -100%); gap: 0.25rem; border: 1px solid #343843; border-radius: 0.7rem; background: #171a21; padding: 0.3rem; box-shadow: 0 10px 30px rgba(20, 20, 24, 0.24); }
+.selection-actions[data-below="1"] { transform: translateX(-50%); }
+.selection-actions button { min-height: 2rem; border: 0; border-radius: 0.45rem; background: transparent; color: #eef1f6; padding: 0 0.7rem; font-size: 0.78rem; font-weight: 600; }
+.selection-actions button:hover { background: #2a2f3a; }
 
 .connection-issue { position: fixed; top: 5rem; left: 50%; z-index: 1200; display: flex; width: min(42rem, calc(100% - 2rem)); transform: translateX(-50%); gap: 0.8rem; border-inline-start: 3px solid var(--attention); background: var(--attention-soft); padding: 0.9rem 1rem; color: var(--ink); box-shadow: var(--shadow); }
 .connection-issue-mark { display: grid; width: 1.5rem; height: 1.5rem; flex: 0 0 auto; place-items: center; border-radius: 50%; background: var(--attention); color: white; font-weight: 600; }

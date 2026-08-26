@@ -23,7 +23,8 @@ test("all persistent mentor adapters receive one exact reactive catalog contract
   assert.match(A2UI_CATALOG_PROMPT, /Params control definitions are literal/i);
   assert.match(A2UI_CATALOG_PROMPT, /2,000 total points/);
   assert.match(A2UI_CATALOG_PROMPT, /instruction and first required interaction must both be visible without scrolling/i);
-  assert.match(A2UI_CATALOG_PROMPT, /Automatic feedback after code execution or a canvas action stays in work focus/i);
+  assert.match(A2UI_CATALOG_PROMPT, /Ordinary code runs stay local and do not create mentor turns/i);
+  assert.match(A2UI_CATALOG_PROMPT, /feedback after explicit code submission or a canvas action stays in work focus/i);
   assert.match(A2UI_CATALOG_PROMPT, /Every turn ends with exactly one learner-visible continuation/i);
   assert.match(A2UI_CATALOG_PROMPT, /instead of asking the learner to type "continue"/i);
   const codexSchema = JSON.parse(await readFile(new URL("../skills/learn-anything/blocks/adapters/codex-cli/response.schema.json", import.meta.url), "utf8"));

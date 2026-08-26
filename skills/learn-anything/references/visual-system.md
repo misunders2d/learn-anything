@@ -43,7 +43,7 @@ The mentor controls chat/work focus. The learner never manages layout. Both regi
 
 - Markdown: type only.
 - Callout: semantic left rule and soft tint, no card.
-- Code/query: dark monospace artifact with one Run action; size to content within viewport bounds.
+- Code/query: dark monospace artifact with **Run** for unrestricted experimentation and a separate, secondary **Submit to mentor** action for feedback; size to content within viewport bounds.
 - Table: aligned columns and one header rule; avoid boxed cells and zebra-striping.
 - Passage: editorial serif with annotations as marginalia or inline notes.
 - Figure: centered visual with a quiet caption.

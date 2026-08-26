@@ -287,6 +287,7 @@ try {
 
   browser = new ChromeHarness(await browserBinary(), profile, address.launchUrl);
   await browser.start();
+  await browser.call("Browser.grantPermissions", { origin: address.url, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
   await waitFor(() => browser.evaluate("document.body.dataset.focus === 'chat'"), "initial chat focus");
   await waitFor(() => browser.evaluate("document.querySelector('.workspace-status')?.innerText.includes('Mentor ready')"), "qualified mentor connection");
   await assertView(browser, "chat");
@@ -510,6 +511,32 @@ try {
   record("work-surface-context-question");
   record("component-anchored-mentor-reply");
 
+  await browser.evaluate(`(() => {
+    const host = document.querySelector('[data-component-id="task"]');
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const start = node.data.indexOf('Run the code.');
+      if (start < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + 'Run the code.'.length);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const rect = range.getBoundingClientRect();
+      host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: rect.left + rect.width / 2, clientY: rect.top }));
+      return true;
+    }
+    return false;
+  })()`);
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.selection-actions'))"), "selection action menu for lesson text");
+  assert.deepEqual(await browser.evaluate("Array.from(document.querySelectorAll('.selection-actions button')).map((button) => button.textContent.trim())"), ["Copy", "Explain"]);
+  assert.equal(await browser.evaluate("Boolean(document.querySelector('.context-chip'))"), false);
+  await browser.evaluate("Array.from(document.querySelectorAll('.selection-actions button')).find((button) => button.textContent.trim() === 'Copy').click()");
+  await waitFor(() => browser.evaluate("navigator.clipboard.readText().then((text) => text === 'Run the code.')"), "selected lesson text copied to clipboard");
+  record("selection-menu-copies-without-creating-context-chip");
+
   await setEditor(browser, code);
   await browser.call("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("Boolean(document.querySelector('.workspace'))"), "workspace after immediate editor refresh");
@@ -522,9 +549,53 @@ try {
   assert.equal(sessionComponent(saved, "browser-code").value, code);
   record("editor-draft-persisted");
 
+  await browser.evaluate(`(() => {
+    const input = document.querySelector('.code-fallback');
+    const start = input.value.indexOf('browser-run-ok');
+    input.focus();
+    input.setSelectionRange(start, start + 'browser-run-ok'.length);
+    const rect = input.getBoundingClientRect();
+    input.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: rect.left + 120, clientY: rect.top + 40 }));
+  })()`);
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.selection-actions'))"), "selection action menu for code");
+  await browser.evaluate("Array.from(document.querySelectorAll('.selection-actions button')).find((button) => button.textContent.trim() === 'Explain').click()");
+  assert.equal(await browser.evaluate("document.querySelector('.work-question-input').value"), "Explain \"browser-run-ok\"");
+  await waitFor(() => browser.evaluate("document.activeElement === document.querySelector('.work-question-input')"), "Explain action focuses work input");
+  await setComposer(browser, "", ".work-question-input");
+  record("code-selection-explain-prefills-work-input");
+
+  let mentorReceivedRun = false;
+  const submissionPoll = fetch(`${address.url}/api/mentor/next?${new URLSearchParams({ token: address.accessToken, mentorId })}`)
+    .then(async (response) => {
+      mentorReceivedRun = true;
+      return { response, body: response.status === 204 ? null : await response.json() };
+    });
   await browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.textContent.trim() === 'Run').click()");
   await waitFor(() => browser.evaluate("document.querySelector('.console-output').innerText.includes('browser-run-ok')"), "browser execution output");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(mentorReceivedRun, false);
+
+  const secondCode = "console.log('browser-run-again');";
+  await setEditor(browser, secondCode);
+  await browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.textContent.trim() === 'Run').click()");
+  await waitFor(() => browser.evaluate("document.querySelector('.console-output').innerText.includes('browser-run-again')"), "second browser execution output");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(mentorReceivedRun, false);
+  await waitFor(() => browser.evaluate("!document.querySelector('.submit-code').disabled"), "submit-to-mentor action after latest run");
+  await browser.evaluate("document.querySelector('.submit-code').click()");
+  const submittedRun = await submissionPoll;
+  assert.equal(submittedRun.response.status, 200);
+  assert.equal(submittedRun.body.type, "execution_result");
+  assert.equal(submittedRun.body.submitted, true);
+  assert.equal(submittedRun.body.code, secondCode);
+  assert.equal(submittedRun.body.result.stdout, "browser-run-again\n");
+  await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify({ type: "RUN_FINISHED", threadId: "browser-acceptance", runId: "submitted-code", outcome: { type: "success" } }) }, mentorId);
+  record("repeated-runs-stay-local-until-explicit-submission");
   record("run-output-visible");
+  await setEditor(browser, code);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  await browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.textContent.trim() === 'Run').click()");
+  await waitFor(() => browser.evaluate("document.querySelector('.console-output').innerText.includes('browser-run-ok')"), "restored browser execution output");
 
   const sqlStage = {
     version: "learn-anything/v1",

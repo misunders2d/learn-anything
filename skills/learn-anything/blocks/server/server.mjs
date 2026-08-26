@@ -649,6 +649,27 @@ export async function createLearnAnythingServer({
 
       if (request.method === "POST" && pathname === "/api/action") {
         const action = await readBody(request);
+        if (action.action === "submit_code") {
+          const component = runnableComponent(session.canvas, action.componentId);
+          const result = session.runResults?.[runResultKey(session.canvas, action.componentId)];
+          if (!component) throw httpError("This code activity is unavailable.", 400);
+          if (typeof action.code !== "string" || action.code !== component.value) throw httpError("Run the current code before submitting it.", 409);
+          if (!result) throw httpError("Run the code before submitting it.", 409);
+          const item = {
+            type: "execution_result",
+            submitted: true,
+            language: component.language,
+            runner: component.run?.runner || component.language,
+            componentId: component.id,
+            code: component.value,
+            result,
+            createdAt: new Date().toISOString(),
+          };
+          setMentorState("waiting");
+          enqueueMentor(item);
+          sendJson(response, 202, { accepted: true });
+          return;
+        }
         const changedComponent = updateCanvasFromAction(session.canvas, action);
         if (changedComponent) {
           await persist();
@@ -719,14 +740,6 @@ export async function createLearnAnythingServer({
             await persist();
             if (activeComponent) broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, activeComponent) }));
           }
-          enqueueMentor({
-            type: "execution_result",
-            language,
-            runner,
-            componentId: body.componentId || null,
-            result,
-            createdAt: new Date().toISOString(),
-          });
           sendJson(response, 200, result);
         } catch (error) {
           const failedResult = { error: error.message };
@@ -738,14 +751,6 @@ export async function createLearnAnythingServer({
             if (activeComponent) broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, activeComponent) }));
           }
           broadcast(agEvent("RUN_ERROR", { message: error.message, code: "EXECUTION_ERROR" }));
-          enqueueMentor({
-            type: "execution_result",
-            language,
-            runner,
-            componentId: body.componentId || null,
-            result: failedResult,
-            createdAt: new Date().toISOString(),
-          });
           sendJson(response, error.statusCode || 400, { error: error.message });
         }
         return;

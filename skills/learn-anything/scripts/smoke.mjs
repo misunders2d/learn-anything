@@ -169,10 +169,21 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
 
     const nextQuery = new URLSearchParams({ token: address.accessToken, mentorId });
     const stageAction = await jsonFetch(`${address.url}/api/mentor/next?${nextQuery}`);
-    const executionFeedback = await jsonFetch(`${address.url}/api/mentor/next?${nextQuery}`);
     if (stageAction.body?.type !== "stage_action") throw new Error("Stage action did not reach mentor.");
-    if (executionFeedback.body?.type !== "execution_result" || !executionFeedback.body.result.stdout.includes("smoke-exec")) {
-      throw new Error("Execution feedback did not reach mentor.");
+    let executionFeedbackSettled = false;
+    const executionFeedbackPromise = jsonFetch(`${address.url}/api/mentor/next?${nextQuery}`).then((value) => {
+      executionFeedbackSettled = true;
+      return value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (executionFeedbackSettled) throw new Error("Ordinary execution unexpectedly reached mentor.");
+    await jsonFetch(`${address.url}/api/action`, {
+      method: "POST",
+      body: JSON.stringify({ action: "submit_code", componentId: "smoke-code", code: "console.log('smoke-exec')" }),
+    }, auth);
+    const executionFeedback = await executionFeedbackPromise;
+    if (executionFeedback.body?.type !== "execution_result" || !executionFeedback.body.submitted || !executionFeedback.body.result.stdout.includes("smoke-exec")) {
+      throw new Error("Explicit code submission did not reach mentor.");
     }
 
     await jsonFetch(`${address.url}/api/action`, {
@@ -191,14 +202,14 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
     }, auth);
     const priorityItem = await jsonFetch(`${address.url}/api/mentor/next?${nextQuery}`);
     if (priorityItem.body?.type !== "user_message" || priorityItem.body.message?.content !== priorityText) {
-      throw new Error("Latest learner message did not supersede queued automatic feedback.");
+      throw new Error("Latest learner message did not supersede the queued stage action.");
     }
 
     const validation = {
       status: "passed",
       checkedAt: new Date().toISOString(),
       scope: "isolated-protocol-and-execution-plus-real-workspace-write",
-      checks: ["health", "browser-assets", "browser-rescue", "code-editor", "api-auth", "origin-defense", "content-type-defense", "mentor-lease", "malformed-a2ui-rejection", "message-queue", "learner-message-priority", "mentor-events", "a2ui-canvas", "agent-driven-focus", "adaptive-actions", "editor-persistence", "execution-feedback", "isolated-run-directory", "serialized-execution", "real-workspace-write", "persistence", "javascript-runner"],
+      checks: ["health", "browser-assets", "browser-rescue", "code-editor", "api-auth", "origin-defense", "content-type-defense", "mentor-lease", "malformed-a2ui-rejection", "message-queue", "learner-message-priority", "mentor-events", "a2ui-canvas", "agent-driven-focus", "adaptive-actions", "editor-persistence", "explicit-code-submission", "isolated-run-directory", "serialized-execution", "real-workspace-write", "persistence", "javascript-runner"],
     };
     await updateValidation(sourceSession, validation);
     return { ok: true, url: address.url, validation };

@@ -59,7 +59,7 @@ Learning catalog components:
 - `Quiz`: `{ "id": "quiz", "component": "Quiz", "question": "...", "options": [{ "id": "a", "label": "..." }] }`
 - `Checklist`: `{ "id": "list", "component": "Checklist", "items": [{ "id": "x", "label": "...", "done": false }] }`
 
-Unknown components render as inspectable JSON instead of crashing the surface. `language` controls presentation; `run.runner` selects a fixed backend. Hidden setup and wrapper code never appear in the learner artifact.
+Unknown components render as inspectable JSON instead of crashing the surface. `language` controls presentation; `run.runner` selects a fixed backend. Hidden setup and wrapper code never appear in the learner artifact. Learners may run code repeatedly without creating mentor turns; **Submit to mentor** explicitly sends the current code and latest result for feedback.
 
 `Plot` accepts numeric data only: at most 8 series, 500 points per series, and 2,000 total points. Optional axis bounds must be finite with `min < max`; titles, labels, descriptions, and captions are bounded strings. The browser draws trusted local SVG, exposes one component-level question path rather than a tab stop per point, includes labels and a tabular fallback, and never executes agent-provided drawing code. A plot illustrates a model or relationship; it is not proof by itself.
 

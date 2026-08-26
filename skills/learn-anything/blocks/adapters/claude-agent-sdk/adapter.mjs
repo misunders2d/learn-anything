@@ -52,7 +52,7 @@ async function* browserMessages(url, token, mentorId, abortSignal, onMessage) {
       : item.type === "user_message"
         ? item.message.content
       : item.type === "execution_result"
-        ? `Learner execution result (${item.language}):\n${JSON.stringify(item.result, null, 2)}`
+        ? `Learner explicitly submitted this ${item.language} code for feedback:\n${item.code || "(code unavailable)"}\n\nLatest execution result:\n${JSON.stringify(item.result, null, 2)}`
         : `Browser canvas action:\n${JSON.stringify(item.action, null, 2)}`;
     await onMessage(item);
     yield {
