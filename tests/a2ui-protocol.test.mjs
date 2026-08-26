@@ -34,6 +34,22 @@ async function fixture() {
   return { root, constructed, runtime, address };
 }
 
+test("surface direction is validated and persisted in the A2UI data model", () => {
+  const initial = createInitialCanvas("Arabic reading");
+  assert.equal(initial.surfaces.lesson.dataModel.direction, "ltr");
+
+  const rtl = applyA2uiMessages(initial, [{
+    version: "v0.9",
+    updateDataModel: { surfaceId: "lesson", path: "/direction", value: "rtl" },
+  }], { focus: "work" });
+  assert.equal(rtl.surfaces.lesson.dataModel.direction, "rtl");
+
+  assert.throws(() => applyA2uiMessages(rtl, [{
+    version: "v0.9",
+    updateDataModel: { surfaceId: "lesson", path: "/direction", value: "sideways" },
+  }], { focus: "work" }), /direction must be ltr, rtl, or auto/i);
+});
+
 test("server persists real A2UI v0.9 surface messages", async () => {
   const { root, constructed, runtime, address } = await fixture();
   const mentorId = "a2ui-test-mentor";

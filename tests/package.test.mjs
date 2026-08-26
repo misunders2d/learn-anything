@@ -21,6 +21,18 @@ test("npm package exposes an OMP-discoverable skill", async () => {
   assert.ok(files.has("skills/learn-anything/SKILL.md"));
   assert.ok(files.has("skills/learn-anything/bin/learn-anything.mjs"));
   assert.ok(files.has("skills/learn-anything/references/pedagogy.md"));
+  assert.ok(files.has("skills/learn-anything/references/visual-system.md"));
+});
+
+test("skill keeps measurable design QA in its packaged guidance", async () => {
+  const skill = await readFile(resolve(projectRoot, "skills/learn-anything/SKILL.md"), "utf8");
+  const visualSystem = await readFile(resolve(projectRoot, "skills/learn-anything/references/visual-system.md"), "utf8");
+
+  assert.match(skill, /Run the design QA in `references\/visual-system\.md`/);
+  assert.match(visualSystem, /WCAG 2\.2 AA/);
+  assert.match(visualSystem, /200% browser zoom/);
+  assert.match(visualSystem, /right-to-left/);
+  assert.match(visualSystem, /reduced-motion/);
 });
 
 test("package declares its Pi skill and gallery metadata", async () => {

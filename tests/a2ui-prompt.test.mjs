@@ -18,6 +18,7 @@ test("all persistent mentor adapters receive one exact reactive catalog contract
   assert.match(A2UI_CATALOG_PROMPT, /"component":"Params"/);
   assert.match(A2UI_CATALOG_PROMPT, /"frames":\[/);
   assert.match(A2UI_CATALOG_PROMPT, /"series":\{"path":"\/series"\}/);
+  assert.match(A2UI_CATALOG_PROMPT, /"direction":"ltr\|rtl\|auto"/);
   assert.match(A2UI_CATALOG_PROMPT, /never formulas or executable UI/i);
   assert.match(A2UI_CATALOG_PROMPT, /Params control definitions are literal/i);
   assert.match(A2UI_CATALOG_PROMPT, /2,000 total points/);

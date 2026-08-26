@@ -29,7 +29,7 @@ Post a flow focus plus A2UI v0.9 messages:
       "updateDataModel": {
         "surfaceId": "lesson",
         "path": "/",
-        "value": { "title": "Ownership checkpoint" }
+        "value": { "title": "Ownership checkpoint", "direction": "ltr" }
       }
     }
   ]
@@ -39,6 +39,8 @@ Post a flow focus plus A2UI v0.9 messages:
 `continuation` is required on every canvas update. Use `{ "kind": "question", "text": "...?" }` with chat and `{ "kind": "action", "text": "..." }` with work. The browser renders it as the explicit **Your turn** or **Next step** cue.
 
 `focus` controls the browser flow: `chat` shows the conversation; `work` shows the active A2UI surface. The mentor owns transitions. Automatic activity feedback stays in `work`; `chat` is for an explicit broad question or one direct question that requires the learner's answer. The browser-owned compact question composer and **Ask mentor** rescue control remain outside agent-rendered content. Whenever chat hides an existing surface, the same control becomes **Back to activity**. Rescue stays in chat while the learner asks; after the mentor reply completes, its `focus` applies even for the same `surfaceId`, so `work` returns to the preserved activity instead of hiding the control the mentor just referenced.
+
+Set surface data-model `direction` to `ltr`, `rtl`, or `auto`; invalid values fail validation. Use `rtl` when primary learner-facing content reads right-to-left. Browser renderer applies it to active work surface while code/editor artifacts stay left-to-right.
 
 Every surface uses a flat adjacency list. The root component has id `root`; `Column` and `Row` reference child ids. Sending an existing component id updates it. Learner-facing display properties—including nested Plot axes and series, Math expressions, Table data, and Figure content—can reference `updateDataModel` state with the exact binding object `{ "path": "/field" }`. Component ids/types, layout children, execution configuration, and `Params` control definitions are literal; frames update the data model that display properties bind to.
 

@@ -516,6 +516,7 @@ function App() {
   const messageEndRef = useRef(null);
   const composerRef = useRef(null);
   const stageScrollRef = useRef(null);
+  const previousFocus = useRef(null);
 
   const focus = resolveFocus(canvas);
   const surface = activeSurface(canvas);
@@ -524,6 +525,7 @@ function App() {
   const hasWorkSurface = Boolean(surface?.components?.root?.children?.length);
   const workExchange = latestWorkExchange(messages);
   const canvasTitle = surface?.dataModel?.title || topic;
+  const canvasDirection = ["rtl", "auto"].includes(surface?.dataModel?.direction) ? surface.dataModel.direction : "ltr";
   const taskKey = workTaskKey(canvas);
   const taskInstructionId = firstLearnerComponentId(canvas);
   const latestMentorMessage = [...messages].reverse().find((message) => message?.role === "assistant") || null;
@@ -571,6 +573,18 @@ function App() {
     });
   }, [focus, taskInstructionId, taskKey]);
 
+  function focusWorkSurface() {
+    const stage = stageScrollRef.current;
+    const target = stage?.querySelector('.parameter-surface input:not([disabled]), .playground-surface textarea:not([disabled]), .playground-surface button:not([disabled]), .interaction-list button:not([disabled]), .checklist-list input:not([disabled]), .work-question-input:not([disabled]), .stage-pane button:not(.ask-component):not([disabled])');
+    (target || stage)?.focus({ preventScroll: true });
+  }
+
+  useEffect(() => {
+    const previous = previousFocus.current;
+    previousFocus.current = focus;
+    if (focus === "work" && previous && previous !== "work") requestAnimationFrame(focusWorkSurface);
+  }, [focus, canvas?.activeSurfaceId]);
+
   useEffect(() => {
     document.body.dataset.focus = focus;
     document.body.dataset.surfaceId = canvas?.activeSurfaceId || "";
@@ -595,7 +609,7 @@ function App() {
 
   useEffect(() => {
     const returnToWork = () => {
-      requestAnimationFrame(() => document.querySelector(".stage-pane input, .stage-pane textarea, .stage-pane button")?.focus());
+      requestAnimationFrame(focusWorkSurface);
     };
     window.addEventListener("learn-anything:return-work", returnToWork);
     return () => window.removeEventListener("learn-anything:return-work", returnToWork);
@@ -793,12 +807,12 @@ function App() {
         )}
       </section>
 
-      <section className="stage-pane" aria-label="Agent-generated learning canvas">
+      <section className="stage-pane" dir={canvasDirection} aria-label="Agent-generated learning canvas">
         <header className="stage-header">
-          <div><span className="stage-topic">{topic}</span><h2>{canvasTitle}</h2></div>
+          <div><span className="stage-topic">{topic}</span><h2 id="stage-title">{canvasTitle}</h2></div>
           <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
         </header>
-        <div ref={stageScrollRef} className="stage-scroll scroll-region">
+        <div ref={stageScrollRef} className="stage-scroll scroll-region" tabIndex="-1" aria-labelledby="stage-title">
           <div className="stage-column">
             {workMentorLead && <section className="work-mentor-lead">
               <div className="anchored-note-label">Mentor</div>

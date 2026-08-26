@@ -219,6 +219,18 @@
         "When chat hides existing work, Back to activity remains visible.",
         "The mentor advances without asking for a meaningless 'continue'; if learner input is required, it asks one direct question."
       ]
+    },
+    {
+      "id": 20,
+      "prompt": "Build me a browser lesson for reading Arabic economic reports. The passages and labels can be long, I use keyboard navigation and 200% zoom, and motion makes me uncomfortable. Do not call it ready until the actual lesson remains usable in those conditions.",
+      "expected_output": "Agent composes a subject-native right-to-left lesson and validates the rendered workspace for long content, zoom/reflow, keyboard focus, reduced motion, state recovery, and measurable accessibility before reporting readiness.",
+      "files": [],
+      "expectations": [
+        "The learning artifact uses the stable Learn Anything visual system rather than a generic dashboard or a new topic-specific shell.",
+        "The agent checks a narrow viewport and 200% zoom or equivalent text enlargement without hiding the primary action, feedback, question composer, or rescue path.",
+        "The agent verifies logical right-to-left layout, long-content resilience, keyboard order, visible focus, and reduced-motion final states in the real browser.",
+        "The agent measures rendered WCAG 2.2 AA contrast and reports any loading, empty, error, disabled, success, or other relevant state it did not exercise."
+      ]
     }
   ]
 }

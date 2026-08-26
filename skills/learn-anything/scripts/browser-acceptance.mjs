@@ -291,6 +291,35 @@ try {
   await waitFor(() => browser.evaluate("document.querySelector('.workspace-status')?.innerText.includes('Mentor ready')"), "qualified mentor connection");
   await assertView(browser, "chat");
   record("initial-chat-visible");
+  const renderedContrast = await browser.evaluate(`(() => {
+    const root = getComputedStyle(document.documentElement);
+    const parse = (value) => {
+      const probe = document.createElement('span');
+      probe.style.color = value.trim();
+      document.body.append(probe);
+      const channels = getComputedStyle(probe).color.match(/[\\d.]+/g).slice(0, 3).map(Number);
+      probe.remove();
+      return channels;
+    };
+    const luminance = (channels) => channels.map((channel) => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    }).reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index], 0);
+    const ratio = (foreground, background) => {
+      const values = [luminance(parse(foreground)), luminance(parse(background))].sort((a, b) => b - a);
+      return (values[0] + 0.05) / (values[1] + 0.05);
+    };
+    const ground = root.getPropertyValue('--ground');
+    return {
+      faintText: ratio(root.getPropertyValue('--faint'), ground),
+      focusIndicator: ratio(root.getPropertyValue('--accent'), ground),
+      primaryButton: ratio('#ffffff', root.getPropertyValue('--accent')),
+    };
+  })()`);
+  assert.ok(renderedContrast.faintText >= 4.5, `faint text contrast must be at least 4.5:1, got ${renderedContrast.faintText}`);
+  assert.ok(renderedContrast.focusIndicator >= 3, `focus contrast must be at least 3:1, got ${renderedContrast.focusIndicator}`);
+  assert.ok(renderedContrast.primaryButton >= 4.5, `primary button contrast must be at least 4.5:1, got ${renderedContrast.primaryButton}`);
+  record("rendered-core-colors-meet-wcag-contrast");
   assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('Mentor ready')"));
   assert.equal(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('mentor-output-may-arrive-per-turn')"), false);
   assert.equal(await browser.evaluate("Boolean(document.querySelector('.console-output'))"), false);
@@ -378,9 +407,11 @@ try {
   ]) await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify(event) }, mentorId);
   await renderCanvas(address, workStage, mentorId);
   await assertView(browser, "work");
+  await waitFor(() => browser.evaluate("document.querySelector('.stage-pane').contains(document.activeElement)"), "focus moves into work surface");
   assert.ok(await browser.evaluate("document.querySelector('.work-mentor-lead')?.innerText.includes('must remain visible')"));
   await waitFor(() => browser.evaluate("document.querySelector('.stage-pane .course-continuation')?.innerText.toLowerCase().includes('next step') === true"), "work continuation cue");
   record("mentor-reply-visible-through-work-transition");
+  record("chat-to-work-focus-moves-to-visible-control");
   record("work-turn-shows-explicit-next-action");
 
   await renderCanvas(address, { ...workStage, focus: "chat" }, mentorId);
@@ -782,10 +813,74 @@ try {
 
   await browser.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await assertView(browser, "work", { mobile: true });
+  assert.equal(await browser.evaluate("document.querySelector('.stage-pane').scrollWidth <= document.querySelector('.stage-pane').clientWidth + 1"), true);
   await browser.evaluate("document.getElementById('mentor-rescue').click()");
   await assertView(browser, "chat", { rescued: true, mobile: true });
   record("mobile-work-and-rescue-visibility");
+  record("mobile-shell-has-no-page-level-horizontal-overflow");
   await browser.call("Emulation.clearDeviceMetricsOverride");
+
+  await renderCanvas(address, { ...workStage, components: [{ ...workStage.components[0] }, { ...workStage.components[1], value: code }] }, mentorId);
+  await assertView(browser, "work");
+  await browser.evaluate("document.documentElement.style.fontSize = '200%'");
+  await assertView(browser, "work");
+  const enlarged = await browser.evaluate(`(() => {
+    const stage = document.querySelector('.stage-pane');
+    const rescue = document.getElementById('mentor-rescue').getBoundingClientRect();
+    const composer = document.querySelector('.work-question-input').getBoundingClientRect();
+    return {
+      noPageOverflow: stage.scrollWidth <= stage.clientWidth + 1,
+      rescueVisible: rescue.width > 0 && rescue.height > 0 && rescue.right <= innerWidth && rescue.bottom <= innerHeight,
+      composerVisible: composer.width > 100 && composer.height > 0,
+    };
+  })()`);
+  assert.deepEqual(enlarged, { noPageOverflow: true, rescueVisible: true, composerVisible: true });
+  await browser.evaluate("document.documentElement.style.fontSize = ''");
+  record("two-hundred-percent-text-scale-keeps-core-actions-visible");
+
+  await browser.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  const maxMotionMs = await browser.evaluate(`(() => {
+    const toMs = (value) => value.endsWith('ms') ? Number.parseFloat(value) : Number.parseFloat(value) * 1000;
+    const values = Array.from(document.querySelectorAll('.workspace, .workspace > section, .stage-component, .thinking-dot')).flatMap((element) => {
+      const style = getComputedStyle(element);
+      return [...style.animationDuration.split(','), ...style.transitionDuration.split(',')].map((value) => toMs(value.trim()));
+    });
+    return Math.max(...values.filter(Number.isFinite));
+  })()`);
+  assert.ok(maxMotionMs <= 0.1, `reduced-motion durations must settle immediately, got ${maxMotionMs}ms`);
+  await browser.call("Emulation.setEmulatedMedia", { features: [] });
+  record("reduced-motion-settles-into-complete-state");
+
+  const rtlStage = {
+    ...workStage,
+    title: "قراءة تقرير اقتصادي طويل باللغة العربية",
+    dataModel: { direction: "rtl" },
+    components: [
+      { ...workStage.components[0], title: "المهمة الحالية", content: "اقرأ الفقرة الطويلة، ثم شغّل المثال وراجع النتيجة بجانبها." },
+      { ...workStage.components[1], value: code },
+    ],
+  };
+  await renderCanvas(address, rtlStage, mentorId);
+  await assertView(browser, "work");
+  const rtlLayout = await browser.evaluate(`(() => {
+    const stage = document.querySelector('.stage-pane');
+    const rescue = document.getElementById('mentor-rescue').getBoundingClientRect();
+    return {
+      direction: getComputedStyle(document.querySelector('.stage-pane')).direction,
+      noPageOverflow: stage.scrollWidth <= stage.clientWidth + 1,
+      calloutStartBorder: getComputedStyle(document.querySelector('.callout-surface')).borderInlineStartWidth,
+      codeDirection: getComputedStyle(document.querySelector('.playground-surface')).direction,
+      rescueVisible: rescue.width > 0 && rescue.height > 0 && rescue.left >= 0 && rescue.right <= innerWidth,
+    };
+  })()`);
+  assert.deepEqual(rtlLayout, {
+    direction: "rtl",
+    noPageOverflow: true,
+    calloutStartBorder: "3px",
+    codeDirection: "ltr",
+    rescueVisible: true,
+  });
+  record("right-to-left-content-keeps-logical-layout-and-ltr-code");
 
   const unknownStage = {
     version: "learn-anything/v1",

@@ -62,7 +62,7 @@ export function createInitialCanvas(topic) {
       updateDataModel: {
         surfaceId: "lesson",
         path: "/",
-        value: { title: topic },
+        value: { title: topic, direction: "ltr" },
       },
     },
   ]);
@@ -207,6 +207,10 @@ function validateLearningComponent(surface, component) {
 
 function validateSurfaceGraph(surface) {
   if (surface.catalogId !== LEARNING_CATALOG_ID) throw protocolError(`Unsupported A2UI catalog: ${surface.catalogId}`);
+  const direction = surface.dataModel?.direction;
+  if (direction !== undefined && !["ltr", "rtl", "auto"].includes(direction)) {
+    throw protocolError(`A2UI surface ${surface.id} direction must be ltr, rtl, or auto.`);
+  }
   const components = surface.components || {};
   const root = components.root;
   if (!root) throw protocolError(`A2UI surface ${surface.id} has no root component.`);
@@ -391,9 +395,11 @@ export function canvasFromStage(stage, topic = "Learning workspace") {
     children.push(id);
     components.push({ ...properties, id, component: type[0].toUpperCase() + type.slice(1) });
   }
+  const dataModel = stage.dataModel && typeof stage.dataModel === "object" && !Array.isArray(stage.dataModel) ? clone(stage.dataModel) : {};
+  const direction = stage.direction ?? dataModel.direction ?? "ltr";
   return applyA2uiMessages(emptyCanvas(stage.focus === "work" ? "work" : "chat"), [
     { version: A2UI_VERSION, createSurface: { surfaceId, catalogId: LEARNING_CATALOG_ID } },
     { version: A2UI_VERSION, updateComponents: { surfaceId, components } },
-    { version: A2UI_VERSION, updateDataModel: { surfaceId, path: "/", value: { ...(stage.dataModel && typeof stage.dataModel === "object" && !Array.isArray(stage.dataModel) ? clone(stage.dataModel) : {}), title: stage.title || topic } } },
+    { version: A2UI_VERSION, updateDataModel: { surfaceId, path: "/", value: { ...dataModel, title: stage.title || topic, direction } } },
   ]);
 }
