@@ -126,7 +126,7 @@ Review package source before installation. Pi and Oh My Pi packages run with the
 
 ## Current limits
 
-The package includes native Pi, Claude, Codex, and explicit manual-shell adapters. Pi headless mode keeps browser submissions active without requiring a terminal nudge. Other agents integrate through the same mentor HTTP/runtime contract and capability metadata; unsupported environments stop before opening an unstaffed browser. Host and container execution blocks are available, but neither Docker nor Podman is required. Voice runtimes and a native adapter for every other harness are not included yet.
+The package includes native Pi, Claude, Codex, and explicit manual-shell adapters. Pi RPC mode keeps browser submissions active without requiring a terminal nudge, preserves one dedicated mentor session per course, and lets the learner choose any available authenticated Pi model in the browser without changing the frontier constructor agent. Pi mentor answers arrive through one schema-validated terminating tool; the host converts typed surface plans to A2UI and atomically commits text, focus, canvas, continuation, and completion. Other agents integrate through the same mentor HTTP/runtime contract and capability metadata; unsupported environments stop before opening an unstaffed browser. Host and container execution blocks are available, but neither Docker nor Podman is required. Voice runtimes and a native adapter for every other harness are not included yet.
 
 ## Development
 

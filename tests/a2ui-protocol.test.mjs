@@ -26,10 +26,10 @@ async function request(address, path, options = {}, mentorId = null) {
   return { response, body };
 }
 
-async function fixture() {
+async function fixture({ profile = "portable-shell", modelCatalogLoader } = {}) {
   const root = await mkdtemp(join(tmpdir(), "learn-anything-a2ui-"));
-  const constructed = await constructSession({ topic: "Python protocols", root, profile: "portable-shell" });
-  const runtime = await createLearnAnythingServer({ sessionDir: constructed.sessionDir, kitRoot, port: 0 });
+  const constructed = await constructSession({ topic: "Python protocols", root, profile });
+  const runtime = await createLearnAnythingServer({ sessionDir: constructed.sessionDir, kitRoot, port: 0, modelCatalogLoader });
   const address = await runtime.listen();
   return { root, constructed, runtime, address };
 }
@@ -100,6 +100,191 @@ test("code runs stay local until the learner submits the latest result", async (
     assert.equal(delivered.body.submitted, true);
     assert.equal(delivered.body.code, "console.log('two')");
     assert.equal(delivered.body.result.stdout, "two\n");
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("model selection stays unavailable for adapters that do not own a Pi model catalog", async () => {
+  const { root, runtime, address } = await fixture();
+  try {
+    const catalog = await request(address, "/api/models");
+    assert.equal(catalog.response.status, 200);
+    assert.equal(catalog.body.supported, false);
+    assert.deepEqual(catalog.body.models, []);
+    const change = await request(address, "/api/model", {
+      method: "POST",
+      body: JSON.stringify({ model: "openai-codex/gpt-5.4-mini" }),
+    });
+    assert.equal(change.response.status, 409);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("per-course mentor model selection persists without replacing the Pi session", async () => {
+  const modelCatalogLoader = async () => ({
+    defaultModel: "openai-codex/gpt-5.6-sol",
+    models: [
+      { id: "openai-codex/gpt-5.6-sol", provider: "openai-codex", model: "gpt-5.6-sol" },
+      { id: "openai-codex/gpt-5.4-mini", provider: "openai-codex", model: "gpt-5.4-mini" },
+    ],
+  });
+  const state = await fixture({ profile: "pi-cli", modelCatalogLoader });
+  let runtime = state.runtime;
+  let address = state.address;
+  const mentorId = "persistent-model-mentor";
+  try {
+    const catalog = await request(address, "/api/models");
+    assert.equal(catalog.response.status, 200);
+    assert.equal(catalog.body.selectedModel, "openai-codex/gpt-5.6-sol");
+    assert.deepEqual(catalog.body.models.map((model) => model.id), ["openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.4-mini"]);
+
+    const invalid = await request(address, "/api/model", {
+      method: "POST",
+      body: JSON.stringify({ model: "made-up/missing" }),
+    });
+    assert.equal(invalid.response.status, 400);
+
+    const selected = await request(address, "/api/model", {
+      method: "POST",
+      body: JSON.stringify({ model: "openai-codex/gpt-5.4-mini" }),
+    });
+    assert.equal(selected.response.status, 202);
+    assert.equal(selected.body.selectedModel, "openai-codex/gpt-5.4-mini");
+    const afterSelection = await request(address, "/api/session");
+    assert.equal(afterSelection.body.mentorState, "idle");
+
+    await request(address, "/api/mentor/register", {
+      method: "POST",
+      body: JSON.stringify({ mentorId, takeover: true }),
+    });
+    await request(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
+    await request(address, "/api/mentor/session-ready", { method: "POST", body: "{}" }, mentorId);
+    const beforeRestart = JSON.parse(await readFile(state.constructed.sessionPath, "utf8"));
+    assert.ok(beforeRestart.agentSessionId);
+    assert.equal(beforeRestart.mentorModel, "openai-codex/gpt-5.4-mini");
+    assert.equal(beforeRestart.mentorSessionInitialized, true);
+
+    await runtime.close();
+    runtime = await createLearnAnythingServer({
+      sessionDir: state.constructed.sessionDir,
+      kitRoot,
+      port: 0,
+      modelCatalogLoader,
+    });
+    address = await runtime.listen();
+    const resumed = await request(address, "/api/session");
+    const afterRestart = JSON.parse(await readFile(state.constructed.sessionPath, "utf8"));
+    assert.equal(resumed.body.mentorModel, "openai-codex/gpt-5.4-mini");
+    assert.equal(resumed.body.mentorSessionInitialized, true);
+    assert.equal(afterRestart.agentSessionId, beforeRestart.agentSessionId);
+  } finally {
+    await runtime.close();
+    await rm(state.root, { recursive: true, force: true });
+  }
+});
+
+test("mentor turn commit publishes transcript, canvas, continuation, and completion atomically", async () => {
+  const { root, constructed, runtime, address } = await fixture();
+  const mentorId = "atomic-turn-mentor";
+  try {
+    await request(address, "/api/mentor/register", {
+      method: "POST",
+      body: JSON.stringify({ mentorId, takeover: true }),
+    });
+    await request(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
+    await request(address, "/api/message", {
+      method: "POST",
+      body: JSON.stringify({ text: "Почему декораторы нужны?", source: "work", surfaceId: "lesson" }),
+    });
+    const next = await request(address, `/api/mentor/next?mentorId=${mentorId}`);
+    assert.equal(next.response.status, 200);
+    assert.ok(next.body.mentorTurn.id);
+    assert.equal(Number.isInteger(next.body.mentorTurn.baseRevision), true);
+    await request(address, "/api/mentor/event", {
+      method: "POST",
+      body: JSON.stringify({ type: "RUN_STARTED", runId: "run-atomic", turnId: next.body.mentorTurn.id }),
+    }, mentorId);
+
+    const before = (await request(address, "/api/session")).body;
+    const invalid = await request(address, "/api/mentor/turn", {
+      method: "POST",
+      body: JSON.stringify({
+        turnId: next.body.mentorTurn.id,
+        baseRevision: next.body.mentorTurn.baseRevision,
+        runId: "run-atomic",
+        message: "Useful answer must survive a bad canvas proposal.",
+        focus: "work",
+        continuation: { kind: "action", text: "Inspect the visible cycle." },
+        messages: [
+          { version: "v0.9", createSurface: { surfaceId: "cycle", catalogId: "urn:learn-anything:catalog:v1" } },
+          { version: "v0.9", updateComponents: { surfaceId: "cycle", components: [{ id: "root", component: "Column", children: ["root"] }] } },
+        ],
+      }),
+    }, mentorId);
+    assert.equal(invalid.response.status, 400);
+    const afterInvalid = (await request(address, "/api/session")).body;
+    assert.deepEqual(afterInvalid.transcript, before.transcript);
+    assert.deepEqual(afterInvalid.canvas, before.canvas);
+    assert.deepEqual(afterInvalid.continuation, before.continuation);
+    assert.equal(afterInvalid.mentorRevision, before.mentorRevision);
+
+    const committed = await request(address, "/api/mentor/turn", {
+      method: "POST",
+      body: JSON.stringify({
+        turnId: next.body.mentorTurn.id,
+        baseRevision: next.body.mentorTurn.baseRevision,
+        runId: "run-atomic",
+        initializeSession: true,
+        message: "Декоратор отделяет повторяемое поведение от основной функции.",
+        presentation: "chat",
+        focus: "chat",
+        continuation: { kind: "question", text: "Показать короткий пример?" },
+        messages: [],
+      }),
+    }, mentorId);
+    assert.equal(committed.response.status, 201);
+    assert.equal(committed.body.committed, true);
+    const current = (await request(address, "/api/session")).body;
+    assert.equal(current.transcript.at(-1).content, "Декоратор отделяет повторяемое поведение от основной функции.");
+    assert.equal(current.canvas.focus, "chat");
+    assert.deepEqual(current.continuation, { kind: "question", text: "Показать короткий пример?" });
+    assert.equal(current.mentorSessionInitialized, true);
+    assert.equal(current.mentorState, "idle");
+    assert.equal(current.mentorRevision, before.mentorRevision + 1);
+
+    const duplicate = await request(address, "/api/mentor/turn", {
+      method: "POST",
+      body: JSON.stringify({ turnId: next.body.mentorTurn.id }),
+    }, mentorId);
+    assert.equal(duplicate.response.status, 200);
+    assert.equal(duplicate.body.idempotent, true);
+    const persisted = JSON.parse(await readFile(constructed.sessionPath, "utf8"));
+    assert.equal(persisted.transcript.filter((message) => message.id === committed.body.messageId).length, 1);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operational mentor failures stay out of learner transcript and persist as diagnostics", async () => {
+  const { root, constructed, runtime, address } = await fixture();
+  const mentorId = "diagnostic-mentor";
+  try {
+    await request(address, "/api/mentor/register", { method: "POST", body: JSON.stringify({ mentorId, takeover: true }) });
+    await request(address, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
+    const before = (await request(address, "/api/session")).body.transcript.length;
+    const failed = await request(address, "/api/mentor/event", {
+      method: "POST",
+      body: JSON.stringify({ type: "RUN_ERROR", code: "MENTOR_ERROR", message: "provider failed", runId: "run-failed" }),
+    }, mentorId);
+    assert.equal(failed.response.status, 202);
+    assert.equal((await request(address, "/api/session")).body.transcript.length, before);
+    const persisted = JSON.parse(await readFile(constructed.sessionPath, "utf8"));
+    assert.equal(persisted.mentorDiagnostics.at(-1).message, "provider failed");
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
@@ -325,10 +510,26 @@ test("inline work preserves canvas and explicitly updates continuation on both m
     }, mentorId);
     await request(address, "/api/message", {
       method: "POST",
-      body: JSON.stringify({ text: "Why this value?", source: "work", surfaceId: "lesson" }),
+      body: JSON.stringify({ text: "Why this value?", source: "work", surfaceId: "lesson", context: { componentId: "code", label: "visible code" } }),
     });
     const next = await request(address, `/api/mentor/next?mentorId=${mentorId}`);
     assert.equal(next.body.message.source, "work");
+
+    const beforePreview = (await request(address, "/api/session")).body;
+    const invalidPreview = await request(address, "/api/a2ui?validate=1", {
+      method: "POST",
+      body: JSON.stringify({ focus: "chat", messages: [], continuation: { kind: "question", text: "What should we discuss?" } }),
+    }, mentorId);
+    assert.equal(invalidPreview.response.status, 400);
+    assert.match(invalidPreview.body.error, /anchored work replies must preserve work focus/i);
+    const validPreview = await request(address, "/api/a2ui?validate=1", {
+      method: "POST",
+      body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text: "Inspect the highlighted line, then retry." } }),
+    }, mentorId);
+    assert.equal(validPreview.response.status, 200);
+    const afterPreview = (await request(address, "/api/session")).body;
+    assert.deepEqual(afterPreview.canvas, beforePreview.canvas);
+    assert.deepEqual(afterPreview.continuation, beforePreview.continuation);
 
     const replacement = [{ version: "v0.9", updateDataModel: { surfaceId: "lesson", path: "/title", value: "Hidden replacement" } }];
     const preserved = await request(address, "/api/a2ui", {

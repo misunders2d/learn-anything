@@ -25,7 +25,11 @@ Use the bundled browser shell as a visual system, not as a generic dashboard tem
 1. Determine kit root from this `SKILL.md` location.
 2. Run `node <kit-root>/bin/learn-anything.mjs probe --json`.
 3. Choose the smallest compatible persistent profile:
-   - Read `profiles/pi-cli.json` when Pi is the active harness. It uses Pi headless mode as a persistent browser mentor; never substitute the manual shell bridge.
+   - Read `profiles/pi-cli.json` when Pi is the active harness.
+     - An explicitly selected or saved `pi-cli` profile requires persistent RPC mode, explicit extension tools, `--session-id`, `--session-dir`, `--model`, `--list-models`, and system-prompt/session naming flags. Fail closed with update guidance when any is missing.
+     - A fresh `auto` construction may choose another verified persistent adapter when Pi is unsupported. It must never substitute the manual shell bridge as live mentorship; if no persistent adapter matches, stop before construction.
+     - The invoking frontier Pi constructs the course, while the browser uses one separate persistent Pi RPC mentor session with only the kit-owned schema-validated terminating mentor tool enabled. Consume Pi protocol events and typed tool details; never extract JSON or A2UI JSONL from assistant prose.
+     - The browser lists all currently available authenticated Pi models and persists its per-course selection; changing that selection affects the next mentor turn without changing the invoking Pi.
    - Read `profiles/reference.json` only when the Claude Agent SDK is the active authenticated adapter.
    - Read `profiles/codex-cli.json` whenever the installed Codex CLI is the available persistent adapter.
    - Use `profiles/portable-shell.json` only for explicit manual/degraded operation. It cannot wake a terminal agent from the browser and must never be presented as live mentorship.
@@ -92,7 +96,7 @@ Use visuals only for a relationship the learner needs to see. Use `Math` for not
 
 ## Resume
 
-Use the existing session directory. Do not replace transcript, exercises, A2UI canvas, or assembly manifest. Start repaints saved browser state before the persistent mentor reconnects.
+Use the existing session directory. Do not replace transcript, exercises, A2UI canvas, assembly manifest, dedicated mentor session id, or selected mentor model. Start repaints saved browser state before the persistent mentor reconnects. A Pi mentor reopens its course-owned RPC session and may change models within that session without rebuilding context from a bounded transcript on every turn. Each typed mentor candidate is reconciled against its explicit turn identity and committed atomically with learner-facing text, focus, canvas, continuation, and completion state. Operational/provider failures remain durable diagnostics and never become fake mentor messages.
 
 ## Validation
 

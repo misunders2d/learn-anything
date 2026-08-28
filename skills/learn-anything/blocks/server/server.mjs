@@ -3,6 +3,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mentorItemIsSuperseded } from "../adapters/codex-cli/turn-order.mjs";
+import { loadPiModelCatalog } from "../adapters/pi-cli/models.mjs";
+import { assemblyBlockVersionMismatch, loadBlockCatalog } from "../adapters/runtime.mjs";
 import { runSelectedCode, selectedRunners } from "../execution/runner.mjs";
 import {
   A2UI_VERSION,
@@ -175,6 +178,7 @@ export async function createLearnAnythingServer({
   kitRoot = defaultKitRoot,
   host = "127.0.0.1",
   port = 0,
+  modelCatalogLoader = loadPiModelCatalog,
 } = {}) {
   if (!sessionDir) throw new Error("sessionDir is required.");
   const resolvedSessionDir = resolve(sessionDir);
@@ -185,10 +189,25 @@ export async function createLearnAnythingServer({
   if (session.schemaVersion !== 3 || session.assembly?.schemaVersion !== 1 || !session.canvas) {
     throw new Error("Session requires explicit migration. Run learn-anything create for this topic with --migrate.");
   }
+  const catalog = await loadBlockCatalog(kitRoot);
+  if (assemblyBlockVersionMismatch(session, catalog)) {
+    throw new Error("Session requires explicit migration. Run learn-anything create for this topic with --migrate.");
+  }
+  let sessionChanged = false;
+  if (session.assembly?.profile === "pi-cli" && !session.agentSessionId) {
+    session.agentSessionId = randomUUID();
+    session.mentorSessionInitialized = false;
+    sessionChanged = true;
+  }
   if (!session.security?.accessToken) {
     session.security = { ...(session.security || {}), accessToken: randomBytes(32).toString("base64url") };
-    await atomicSession(sessionPath, session);
+    sessionChanged = true;
   }
+  if (!Number.isInteger(session.mentorRevision) || session.mentorRevision < 0) {
+    session.mentorRevision = 0;
+    sessionChanged = true;
+  }
+  if (sessionChanged) await atomicSession(sessionPath, session);
   const accessToken = session.security.accessToken;
   const clients = new Set();
   const mentorQueue = [];
@@ -197,8 +216,7 @@ export async function createLearnAnythingServer({
   const partialMessages = new Map();
   let activeMentorId = null;
   let activeMentorReady = false;
-  let activeMentorSource = null;
-  let activeMentorItemType = null;
+  let activeMentorTurn = null;
   let mentorState = "idle";
   let runTail = Promise.resolve();
   let interruptHandler = null;
@@ -208,6 +226,21 @@ export async function createLearnAnythingServer({
   let browserDisconnectGraceMs = 5_000;
   let browserDisconnectTimer = null;
   let browserHasConnected = false;
+  let modelCatalogPromise = null;
+
+  async function mentorModelCatalog() {
+    if (session.assembly?.profile !== "pi-cli") return { supported: false, models: [], defaultModel: null };
+    if (!modelCatalogPromise) {
+      const piCommand = session.assembly?.capabilities?.commands?.pi || "pi";
+      modelCatalogPromise = Promise.resolve(modelCatalogLoader({ piCommand }))
+        .catch((error) => {
+          modelCatalogPromise = null;
+          throw error;
+        });
+    }
+    const catalog = await modelCatalogPromise;
+    return { supported: true, models: catalog.models || [], defaultModel: catalog.defaultModel || null };
+  }
 
   function cancelBrowserDisconnect() {
     clearTimeout(browserDisconnectTimer);
@@ -242,6 +275,7 @@ export async function createLearnAnythingServer({
       if (!takeover) throw httpError("Another mentor owns this workspace.", 409);
       activeMentorId = mentorId;
       activeMentorReady = false;
+      activeMentorTurn = null;
       for (const waiter of [...mentorWaiters]) {
         if (waiter.mentorId !== mentorId) waiter.finish(STALE_MENTOR);
       }
@@ -258,8 +292,7 @@ export async function createLearnAnythingServer({
   function markMentorUnavailable(reason = "unavailable") {
     activeMentorReady = false;
     activeMentorId = null;
-    activeMentorSource = null;
-    activeMentorItemType = null;
+    activeMentorTurn = null;
     partialMessages.clear();
     setMentorState(mentorQueue.length ? "waiting" : "idle");
     for (const waiter of [...mentorWaiters]) waiter.finish(STALE_MENTOR);
@@ -312,22 +345,28 @@ export async function createLearnAnythingServer({
     broadcast(agEvent("CUSTOM", { name: "mentor_state", value: { state } }));
   }
 
-  function persist() {
-    const task = persistTail.then(() => atomicSession(sessionPath, session));
+  function persist({ bumpRevision = true } = {}) {
+    if (bumpRevision) session.mentorRevision = (session.mentorRevision || 0) + 1;
+    const snapshot = structuredClone(session);
+    const task = persistTail.then(() => atomicSession(sessionPath, snapshot));
     persistTail = task.catch(() => {});
     return task;
   }
 
   function enqueueMentor(item) {
-    if (item?.type === "user_message") {
+    const queuedItem = {
+      ...item,
+      mentorTurn: { id: item?.mentorTurn?.id || randomUUID() },
+    };
+    if (queuedItem?.type === "user_message") {
       for (let index = mentorQueue.length - 1; index >= 0; index -= 1) {
         if (mentorQueue[index]?.type !== "user_message") mentorQueue.splice(index, 1);
       }
     }
     const index = mentorWaiters.findIndex((waiter) => waiter.mentorId === activeMentorId);
     const waiter = index >= 0 ? mentorWaiters.splice(index, 1)[0] : null;
-    if (waiter) waiter.finish(item);
-    else mentorQueue.push(item);
+    if (waiter) waiter.finish(queuedItem);
+    else mentorQueue.push(queuedItem);
   }
 
   function nextMentorMessage(mentorId, timeoutMs = 55_000) {
@@ -349,10 +388,19 @@ export async function createLearnAnythingServer({
   async function applyMentorEvent(event) {
     if (!event || typeof event.type !== "string") throw Object.assign(new Error("Mentor event requires type."), { statusCode: 400 });
     if (event.type === "RUN_STARTED") {
+      if (event.turnId && event.turnId !== activeMentorTurn?.id) throw httpError("Mentor turn is no longer active.", 409);
       setMentorState("responding");
     } else if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
-      activeMentorSource = null;
-      activeMentorItemType = null;
+      if (!event.turnId || event.turnId === activeMentorTurn?.id) activeMentorTurn = null;
+      if (event.type === "RUN_ERROR") {
+        session.mentorDiagnostics = [...(session.mentorDiagnostics || []), {
+          at: new Date().toISOString(),
+          code: String(event.code || "MENTOR_ERROR").slice(0, 100),
+          message: String(event.message || "Mentor operation failed.").slice(0, 4_000),
+          ...(event.runId ? { runId: String(event.runId).slice(0, 200) } : {}),
+        }].slice(-20);
+        await persist({ bumpRevision: false });
+      }
       if (partialMessages.size === 0) setMentorState(mentorQueue.length ? "waiting" : "idle");
     } else if (event.type === "TEXT_MESSAGE_START") {
       partialMessages.set(event.messageId, {
@@ -383,7 +431,7 @@ export async function createLearnAnythingServer({
     } else if (event.type === "CUSTOM" && event.name === "a2ui") {
       const payload = plainCanvasPayload(event.value);
       enforceAutomaticActivityFocus(payload);
-      if (activeMentorSource === "work") return preserveInlineWorkContinuation(payload);
+      if (activeMentorTurnIsAnchoredWork()) return preserveInlineWorkContinuation(payload);
       session.canvas = payload.messages.length
         ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
         : { ...session.canvas, focus: payload.focus };
@@ -391,7 +439,7 @@ export async function createLearnAnythingServer({
       await persist();
     } else if (event.type === "CUSTOM" && event.name === "mentor_session" && event.value?.sessionId) {
       session.agentSessionId = event.value.sessionId;
-      await persist();
+      await persist({ bumpRevision: false });
     }
     broadcast(event);
     return { accepted: true };
@@ -419,16 +467,29 @@ export async function createLearnAnythingServer({
     return { focus: value.focus, messages: value.messages, continuation: { kind: continuation.kind, text } };
   }
 
+  function activeMentorTurnIsAnchoredWork() {
+    const item = activeMentorTurn?.item;
+    return item?.type === "user_message"
+      && item.message?.source === "work"
+      && Boolean(item.message?.context?.componentId)
+      && Boolean(session.canvas?.activeSurfaceId);
+  }
+
+  function assertInlineWorkContinuation(payload) {
+    if (activeMentorTurnIsAnchoredWork() && (payload.focus !== "work" || payload.continuation.kind !== "action")) {
+      throw httpError("Anchored work replies must preserve work focus with a concrete action.", 400);
+    }
+  }
+
   function enforceAutomaticActivityFocus(payload) {
-    if (payload.focus === "chat" && session.canvas?.activeSurfaceId && ["execution_result", "stage_action"].includes(activeMentorItemType)) {
+    assertInlineWorkContinuation(payload);
+    if (payload.focus === "chat" && session.canvas?.activeSurfaceId && ["execution_result", "stage_action"].includes(activeMentorTurn?.item?.type)) {
       throw httpError("Automatic activity feedback must remain in work focus and show the learner's next action.", 400);
     }
   }
 
   async function preserveInlineWorkContinuation(payload) {
-    if (payload.focus !== "work" || payload.continuation.kind !== "action") {
-      throw httpError("Inline work replies must preserve work focus with a concrete action.", 400);
-    }
+    assertInlineWorkContinuation(payload);
     session.continuation = payload.continuation;
     await persist();
     broadcast(agEvent("CUSTOM", {
@@ -441,6 +502,94 @@ export async function createLearnAnythingServer({
       },
     }));
     return { accepted: false, preservedWork: true, continuationUpdated: true, surfaceId: session.canvas?.activeSurfaceId || null };
+  }
+
+  function cleanMentorContext(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const componentId = typeof value.componentId === "string" ? value.componentId.trim().slice(0, 200) : "";
+    if (!componentId) return null;
+    return {
+      componentId,
+      ...(typeof value.label === "string" && value.label.trim() ? { label: value.label.trim().slice(0, 200) } : {}),
+      ...(typeof value.quote === "string" && value.quote.trim() ? { quote: value.quote.trim().slice(0, 2_000) } : {}),
+    };
+  }
+
+  async function commitMentorTurn(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw httpError("Mentor turn payload must be an object.", 400);
+    const turnId = typeof value.turnId === "string" ? value.turnId : "";
+    if (!turnId) throw httpError("Mentor turn requires turnId.", 400);
+    if ((session.mentorCommittedTurnIds || []).includes(turnId)) return { accepted: true, committed: false, idempotent: true, turnId };
+    if (!activeMentorTurn || activeMentorTurn.id !== turnId) throw httpError("Mentor turn is no longer active.", 409);
+    if (!Number.isInteger(value.baseRevision) || value.baseRevision !== activeMentorTurn.baseRevision || value.baseRevision !== session.mentorRevision) {
+      throw httpError("Workspace changed while mentor response was prepared.", 409);
+    }
+    const item = activeMentorTurn.item;
+    if (mentorItemIsSuperseded(item, session)) {
+      activeMentorTurn = null;
+      setMentorState(mentorQueue.length ? "waiting" : "idle");
+      throw httpError("Mentor turn was superseded by a newer learner message.", 409);
+    }
+    const messageText = typeof value.message === "string" ? value.message.trim() : "";
+    if (!messageText) throw httpError("Mentor turn requires learner-facing message text.", 400);
+    if (Buffer.byteLength(messageText) > 100_000) throw httpError("Mentor message is too large.", 413);
+    const payload = plainCanvasPayload({ focus: value.focus, messages: value.messages, continuation: value.continuation });
+    const anchored = item?.type === "user_message"
+      && item.message?.source === "work"
+      && Boolean(item.message?.context?.componentId)
+      && Boolean(session.canvas?.activeSurfaceId);
+    const automatic = ["execution_result", "stage_action"].includes(item?.type) && Boolean(session.canvas?.activeSurfaceId);
+    if (anchored && (payload.focus !== "work" || payload.messages.length !== 0)) {
+      throw httpError("Anchored component replies must preserve the current work canvas.", 400);
+    }
+    if (automatic && payload.focus !== "work") {
+      throw httpError("Automatic activity feedback must preserve work focus.", 400);
+    }
+    const candidateCanvas = payload.messages.length
+      ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
+      : { ...session.canvas, focus: payload.focus };
+    if (payload.focus === "work" && !candidateCanvas.activeSurfaceId) throw httpError("Work focus requires a visible canvas.", 400);
+
+    const context = cleanMentorContext(value.context);
+    const assistantMessage = {
+      id: randomUUID(),
+      role: "assistant",
+      content: messageText,
+      ...(context ? { source: "work", context } : {}),
+      createdAt: new Date().toISOString(),
+    };
+    const previous = session;
+    const candidate = structuredClone(session);
+    candidate.transcript.push(assistantMessage);
+    candidate.canvas = candidateCanvas;
+    candidate.continuation = payload.continuation;
+    candidate.mentorSessionInitialized = candidate.mentorSessionInitialized || value.initializeSession === true;
+    candidate.mentorRevision = (candidate.mentorRevision || 0) + 1;
+    candidate.mentorCommittedTurnIds = [...(candidate.mentorCommittedTurnIds || []), turnId].slice(-100);
+    session = candidate;
+    try {
+      await persist({ bumpRevision: false });
+    } catch (error) {
+      if (session === candidate) session = previous;
+      throw error;
+    }
+    activeMentorTurn = null;
+    setMentorState(mentorQueue.length ? "waiting" : "idle");
+    broadcast(agEvent("CUSTOM", {
+      name: "mentor_turn",
+      value: {
+        message: assistantMessage,
+        canvas: { ...canvasEventValue(session.canvas), continuation: session.continuation },
+        continuation: session.continuation,
+        runId: value.runId || null,
+      },
+    }));
+    broadcast(agEvent("RUN_FINISHED", {
+      threadId: session.slug,
+      runId: value.runId || randomUUID(),
+      outcome: { type: "success" },
+    }));
+    return { accepted: true, committed: true, turnId, messageId: assistantMessage.id, revision: session.mentorRevision };
   }
 
   async function serveStatic(pathname, response) {
@@ -498,8 +647,39 @@ export async function createLearnAnythingServer({
           continuation: session.continuation || null,
           progress: session.progress,
           assembly: session.assembly,
+          mentorModel: session.mentorModel || null,
+          mentorSessionInitialized: session.mentorSessionInitialized === true,
+          mentorRevision: session.mentorRevision,
+          mentorState,
           mentorAttached: Boolean(activeMentorId && activeMentorReady),
         });
+        return;
+      }
+
+      if (request.method === "GET" && pathname === "/api/models") {
+        const catalog = await mentorModelCatalog();
+        if (catalog.supported && !session.mentorModel && catalog.defaultModel) {
+          session.mentorModel = catalog.defaultModel;
+          await persist({ bumpRevision: false });
+        }
+        sendJson(response, 200, {
+          supported: catalog.supported,
+          models: catalog.models,
+          selectedModel: session.mentorModel || catalog.defaultModel || null,
+        });
+        return;
+      }
+
+      if (request.method === "POST" && pathname === "/api/model") {
+        const catalog = await mentorModelCatalog();
+        if (!catalog.supported) throw httpError("This mentor adapter does not support model selection.", 409);
+        const body = await readBody(request);
+        const model = typeof body.model === "string" ? body.model.trim() : "";
+        if (!model || !catalog.models.some((candidate) => candidate.id === model)) throw httpError("Choose an available Pi model.", 400);
+        session.mentorModel = model;
+        await persist({ bumpRevision: false });
+        broadcast(agEvent("CUSTOM", { name: "mentor_model", value: { model } }));
+        sendJson(response, 202, { accepted: true, selectedModel: model });
         return;
       }
 
@@ -518,6 +698,8 @@ export async function createLearnAnythingServer({
             continuation: session.continuation || null,
             progress: session.progress,
             assembly: session.assembly,
+            mentorModel: session.mentorModel || null,
+            mentorState,
             mentorAttached: Boolean(activeMentorId && activeMentorReady),
           },
         }))}\n\n`);
@@ -571,6 +753,16 @@ export async function createLearnAnythingServer({
         sendJson(response, 202, { accepted: true });
         return;
       }
+
+      if (request.method === "POST" && pathname === "/api/mentor/session-ready") {
+        requireActiveMentor(request);
+        if (!session.mentorSessionInitialized) {
+          session.mentorSessionInitialized = true;
+          await persist({ bumpRevision: false });
+        }
+        sendJson(response, 202, { accepted: true });
+        return;
+      }
       if (request.method === "GET" && pathname === "/api/mentor/next") {
         const mentorId = url.searchParams.get("mentorId");
         if (!activeMentorId || activeMentorId !== mentorId || url.searchParams.get("takeover") === "1") {
@@ -583,9 +775,15 @@ export async function createLearnAnythingServer({
           response.writeHead(204, { "cache-control": "no-store" });
           response.end();
         } else {
-          activeMentorSource = item.type === "user_message" ? item.message?.source || "chat" : null;
-          activeMentorItemType = item.type || null;
-          sendJson(response, 200, item);
+          const delivered = {
+            ...item,
+            mentorTurn: {
+              id: item.mentorTurn?.id || randomUUID(),
+              baseRevision: session.mentorRevision,
+            },
+          };
+          activeMentorTurn = { ...delivered.mentorTurn, item: delivered };
+          sendJson(response, 200, delivered);
         }
         return;
       }
@@ -615,6 +813,13 @@ export async function createLearnAnythingServer({
         return;
       }
 
+      if (request.method === "POST" && pathname === "/api/mentor/turn") {
+        requireActiveMentor(request);
+        const result = await commitMentorTurn(await readBody(request));
+        sendJson(response, result.committed ? 201 : 200, result);
+        return;
+      }
+
       if (request.method === "POST" && pathname === "/api/a2ui") {
         requireActiveMentor(request);
         const payload = plainCanvasPayload(await readBody(request));
@@ -626,7 +831,7 @@ export async function createLearnAnythingServer({
           sendJson(response, 200, { valid: true, surfaceId: candidateCanvas.activeSurfaceId || null });
           return;
         }
-        if (activeMentorSource === "work") {
+        if (activeMentorTurnIsAnchoredWork()) {
           sendJson(response, 202, await preserveInlineWorkContinuation(payload));
           return;
         }

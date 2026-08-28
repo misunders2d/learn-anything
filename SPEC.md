@@ -198,7 +198,7 @@ Each session is encapsulated in an isolated directory:
 
 ### 6.1 Two-layer resume
 
-- **Layer 1 — agent memory.** The adapter's `session_id` is stored in `session.json`; resume respawns the mentor with full conversation context.
+- **Layer 1 — agent memory.** The adapter's `session_id` is stored in `session.json`; resume respawns the mentor with full conversation context. The invoking frontier agent remains the constructor/maintainer, while the browser mentor owns this separate persistent session. Compatible adapters expose all authenticated models in the browser, persist one model choice per course, and apply a changed model to the next turn without replacing the mentor session.
 - **Layer 2 — UI and workspace state.** Session id alone does not restore the stage. The selected persistence block also stores the last serialized dynamic-stage state (A2UI surface JSON in the reference profile), editor contents, quiz progress, and chat transcript.
 
 **Resume sequence:**
@@ -288,7 +288,7 @@ These are maintained reference defaults, not universal constraints on every comp
 | 1 | What must every composition produce? | **Usable dynamic browser workspace that adapts to the course and learning flow** | This is the product goal; protocols and bridges are means, not the outcome |
 | 2 | Preferred UI/event protocol? | **A2UI + AG-UI** | A2UI covers the stage; AG-UI supplies streaming transport. Equivalent fallbacks are allowed |
 | 3 | How does the browser reach the agent? | **Server-owned loop, headless mentor child process** | Best support for token streaming and interrupts; other harness-compatible bridges may substitute |
-| 4 | Same session as the terminal agent? | **Separate, resumable mentor session** | Supports streaming while leaving the terminal agent free; use another pattern if a harness provides equivalent continuity |
+| 4 | Same session as the terminal agent? | **Separate, resumable mentor session with per-course model selection** | Preserves course context, lets the browser choose a faster or different authenticated model for the next turn, and leaves the frontier constructor agent free |
 | 5 | Sandbox model? | **Container per session, disclosed host-exec fallback** | Trusted user; VM over-specified. Revisit if untrusted code is ever run |
 | 6 | Runtime? | **Node LTS**, SSE out / POST in | Natural fit for npm and the default reusable server block |
 | 7 | Voice? | **Optional whisper.cpp + Piper blocks** | Local voice without making voice a launch requirement |

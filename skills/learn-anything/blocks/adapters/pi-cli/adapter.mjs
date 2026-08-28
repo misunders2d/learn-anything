@@ -1,18 +1,27 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import process from "node:process";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { A2UI_CATALOG_PROMPT } from "../../a2ui/prompt.mjs";
-import { mentorItemIsSuperseded } from "../codex-cli/turn-order.mjs";
+import { plainTextMentorCandidate, reconcileMentorTurn } from "../mentor-turn.mjs";
+import { PiRpcClient, piRpcArgs } from "./rpc-client.mjs";
 
-let activeProviderChild = null;
+const adapterDir = dirname(fileURLToPath(import.meta.url));
+const extensionPath = join(adapterDir, "mentor-extension.ts");
 
 function option(args, name) {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : null;
+}
+
+class MentorHttpError extends Error {
+  constructor(path, status, body) {
+    super(`${path}: ${status} ${JSON.stringify(body)}`);
+    this.status = status;
+    this.body = body;
+  }
 }
 
 async function requestJson(url, path, token, options = {}) {
@@ -21,7 +30,7 @@ async function requestJson(url, path, token, options = {}) {
     headers: { "content-type": "application/json", "x-learn-anything-token": token, ...(options.headers || {}) },
   });
   const body = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) throw new Error(`${path}: ${response.status} ${JSON.stringify(body)}`);
+  if (!response.ok) throw new MentorHttpError(path, response.status, body);
   return body;
 }
 
@@ -33,98 +42,86 @@ function mentorPost(url, path, token, mentorId, value) {
   });
 }
 
-function mentorPrompt(topic, item, history) {
-  const learnerInput = item.type === "user_message" && item.message?.source === "work"
-    ? `Inline clarification. Keep the current work visible.\nQuestion: ${item.message.content}\nCanvas: ${JSON.stringify(item.canvasContext, null, 2)}`
-    : item.type === "user_message" ? item.message.content : JSON.stringify(item, null, 2);
-  const transcript = history.map((message) => `${message.role === "assistant" ? "Mentor" : "Learner"}: ${message.content}`).join("\n\n");
-  return `You are the mentor inside a local adaptive browser course about ${topic}.
-The browser is the primary learning surface. Answer every browser event here; never tell the learner to continue in a terminal or another chat.
+export function mentorSystemPrompt(topic) {
+  return `You are the persistent mentor inside a local adaptive browser course about ${topic}.
+The browser is the primary learning surface. Answer every browser event here; never send the learner to a terminal or another chat.
 Assume no prior knowledge until demonstrated. Explain before testing. Keep adapter and runtime details out of learner-facing text.
-React automatically to code results and answers captured by the browser. Do not ask the learner to repeat evidence.
-Use focus "chat" for a broad learner question or one genuine question that requires their answer. Do not switch to chat merely to acknowledge, explain, or debrief an observed activity result; keep that progression in focus "work" with one visible next action. Use a visual only for a named relationship: Figure for structure, Plot for quantitative change, Math for notation, and finite Params frames for a bounded state sequence. A control must immediately update a visible bound artifact; a plot illustrates rather than proves.
-When creating work, a2ui_jsonl must be newline-delimited A2UI v0.9 JSON with one message per line and the version string exactly "v0.9":
-{"version":"v0.9","createSurface":{"surfaceId":"lesson","catalogId":"urn:learn-anything:catalog:v1"}}
-{"version":"v0.9","updateComponents":{"surfaceId":"lesson","components":[{"id":"root","component":"Column","children":["intro","code"]},{"id":"intro","component":"Markdown","content":"A clear explanation"},{"id":"code","component":"Code","language":"java","value":"public class Main {}","runnable":true,"run":{"runner":"java"}}]}}
-{"version":"v0.9","updateDataModel":{"surfaceId":"lesson","path":"/","value":{"title":"A learner-facing title"}}}
-	${A2UI_CATALOG_PROMPT}
-	Keep a2ui_jsonl null when no canvas change is needed.
-Return only one valid JSON object with exactly these keys:
-{"message":"learner-facing response","focus":"chat|work","a2ui_jsonl":null,"target_component_id":null,"target_quote":null,"continuation_kind":"question|action","continuation":"one explicit learner-visible next step"}
-Use strings or null for a2ui_jsonl, target_component_id, and target_quote. continuation_kind must be "question" for chat and "action" for work; a chat continuation must contain a question mark. Do not wrap JSON in markdown.
-Recent conversation:
-${transcript || "No previous messages."}
-Browser event:
-${learnerInput}`;
+React automatically only to code explicitly submitted to the mentor and answers captured by the browser. Do not ask the learner to repeat evidence.
+
+Finish every turn by calling complete_mentor_turn exactly once. Never print JSON or protocol data as assistant prose.
+- message: useful learner-facing answer.
+- presentation "chat": broad question or a genuine question requiring the learner's answer.
+- presentation "inline": only an explicitly anchored question about one visible component. Do not replace its canvas.
+- presentation "activity": submitted work, observed activity feedback, or a new/updated visible exercise.
+- continuation.kind: question for chat, action for activity/inline, or none when host should derive it. Punctuation is optional.
+- surface_plan: omit when canvas stays unchanged. To change it, provide structured operations; never provide JSONL strings.
+
+Surface operation kinds map to A2UI v0.9:
+- create_surface: surface_id and optional catalog_id.
+- update_components: surface_id and components array.
+- update_data_model: surface_id, absolute path, and value.
+- delete_surface: surface_id.
+New work normally uses create_surface, update_components, and update_data_model. Catalog ID is urn:learn-anything:catalog:v1.
+${A2UI_CATALOG_PROMPT}
+Keep subject-native artifacts visible. Use visuals only for relationships learner needs to see. Never claim code ran unless browser execution reports it.`;
 }
 
-export function parsePiResponse(stdout) {
-  const trimmed = String(stdout || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end < start) throw new Error(`Pi returned no JSON mentor response: ${trimmed.slice(0, 500)}`);
-  let response;
-  try { response = JSON.parse(trimmed.slice(start, end + 1)); }
-  catch (error) { throw new Error(`Pi mentor response was not valid JSON: ${error.message}`); }
-  const keys = ["message", "focus", "a2ui_jsonl", "target_component_id", "target_quote", "continuation_kind", "continuation"];
-  if (typeof response.message !== "string" || !response.message.trim()) throw new Error("Pi mentor response has no message.");
-  if (!["chat", "work"].includes(response.focus)) throw new Error("Pi mentor response has invalid focus.");
-  for (const key of ["a2ui_jsonl", "target_component_id", "target_quote"]) {
-    if (response[key] !== null && typeof response[key] !== "string") throw new Error(`Pi mentor response has invalid ${key}.`);
+export function mentorEventPrompt(item, history = []) {
+  let learnerInput;
+  if (item.type === "user_message") {
+    const anchored = item.message?.source === "work" && item.message?.context?.componentId;
+    learnerInput = anchored
+      ? `Anchored component question. Explain beside this component without replacing the current activity.\nQuestion: ${item.message.content}\nAnchor: ${JSON.stringify(item.message.context)}\nCanvas: ${JSON.stringify(item.canvasContext, null, 2)}`
+      : item.message?.source === "work"
+        ? `Question submitted from the work composer. Composer origin does not determine presentation; use chat for a broad question and activity only when visible work should change.\nQuestion: ${item.message.content}\nCurrent canvas: ${JSON.stringify(item.canvasContext, null, 2)}`
+        : item.message.content;
+  } else if (item.type === "execution_result") {
+    learnerInput = `Learner explicitly submitted this ${item.language || "code"} work for feedback:\n${item.code || "(code unavailable)"}\n\nLatest execution result:\n${JSON.stringify(item.result, null, 2)}`;
+  } else {
+    learnerInput = `Browser activity event:\n${JSON.stringify(item, null, 2)}`;
   }
-  if (!["question", "action"].includes(response.continuation_kind)) throw new Error("Pi mentor response has invalid continuation_kind.");
-  if (response.focus === "chat" && response.continuation_kind !== "question") throw new Error("Pi chat response requires a question continuation.");
-  if (response.focus === "work" && response.continuation_kind !== "action") throw new Error("Pi work response requires an action continuation.");
-  if (typeof response.continuation !== "string" || !response.continuation.trim()) throw new Error("Pi mentor response has no continuation.");
-  if (response.continuation_kind === "question" && !response.continuation.includes("?")) throw new Error("Pi chat continuation must contain a direct question.");
-  return Object.fromEntries(keys.map((key) => [key, response[key] ?? null]));
+  const transcript = history.map((message) => `${message.role === "assistant" ? "Mentor" : "Learner"}: ${message.content}`).join("\n\n");
+  return `${transcript ? `Initialize this persistent mentor from recent browser transcript:\n${transcript}\n\n` : ""}Browser event:\n${learnerInput}\n\nCall complete_mentor_turn exactly once.`;
 }
 
-function runPi({ sessionDir, prompt }) {
-  const args = ["--no-skills", "--no-extensions", "--no-context-files", "--no-session", "--no-tools", "-p", prompt];
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn("pi", args, { cwd: sessionDir, stdio: ["ignore", "pipe", "pipe"] });
-    activeProviderChild = child;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-12_000); });
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (activeProviderChild === child) activeProviderChild = null;
-      if (code !== 0) return reject(new Error(`pi --print exited ${code ?? signal}: ${stderr.trim() || "no error output"}`));
-      try { resolvePromise(parsePiResponse(stdout)); } catch (error) { reject(error); }
-    });
+export function candidateFromPiTurn(turn) {
+  if (turn.providerError) throw new Error(`Pi provider failed: ${turn.providerError}`);
+  if (turn.toolResults.length > 1) throw new Error("Pi returned multiple complete_mentor_turn results.");
+  if (turn.toolResults.length === 1) return turn.toolResults[0];
+  return plainTextMentorCandidate(turn.assistantText);
+}
+
+async function createRpcClient({ command, sessionDir, sessionId, model, topic }) {
+  const args = piRpcArgs({
+    sessionDir,
+    sessionId,
+    model,
+    systemPrompt: mentorSystemPrompt(topic),
+    sessionName: sessionId ? `Learn Anything: ${topic}` : null,
+    extensionPath,
   });
+  const client = new PiRpcClient({ command, args, cwd: sessionDir });
+  await client.ready();
+  return client;
 }
 
-async function preflightPi(sessionDir) {
-  const response = await runPi({ sessionDir, prompt: "Reply only with this JSON: {\"message\":\"pi-ready\",\"focus\":\"chat\",\"a2ui_jsonl\":null,\"target_component_id\":null,\"target_quote\":null,\"continuation_kind\":\"question\",\"continuation\":\"What would you like to learn?\"}" });
-  if (response.message !== "pi-ready") throw new Error("Pi provider readiness check returned an unexpected response.");
-}
-
-async function sendText(url, token, mentorId, text, metadata = {}) {
-  const messageId = randomUUID();
-  await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "TEXT_MESSAGE_START", messageId, role: "assistant", ...metadata });
-  for (let index = 0; index < text.length; index += 160) {
-    await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "TEXT_MESSAGE_CONTENT", messageId, delta: text.slice(index, index + 160) });
+async function preflightPi(options) {
+  const client = await createRpcClient({ ...options, sessionId: null });
+  try {
+    const turn = await client.prompt("Readiness check. Call complete_mentor_turn with message pi-ready, presentation chat, continuation kind question, continuation text What would you like to learn, and no surface plan.");
+    const candidate = candidateFromPiTurn(turn);
+    if (candidate.message !== "pi-ready") throw new Error("Pi provider readiness check returned an unexpected response.");
+  } finally {
+    client.close();
   }
-  await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "TEXT_MESSAGE_END", messageId });
 }
 
-async function canvasPayload(url, token, response) {
-  const current = await requestJson(url, "/api/session", token);
-  const messages = response.a2ui_jsonl ? response.a2ui_jsonl.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
-    try { return JSON.parse(line); } catch (error) { throw new Error(`a2ui_jsonl line ${index + 1} is invalid JSON: ${error.message}`); }
-  }) : [];
-  if (response.focus === "work" && messages.length === 0 && !current.canvas?.activeSurfaceId) throw new Error("Pi selected work focus without a canvas.");
-  return {
-    focus: response.focus,
-    messages,
-    continuation: { kind: response.continuation_kind, text: response.continuation },
+async function commitTurn({ url, token, mentorId, item, before, candidate, runId, initializeSession }) {
+  const payload = {
+    ...reconcileMentorTurn(item, candidate, before, { runId }),
+    initializeSession,
   };
+  return mentorPost(url, "/api/mentor/turn", token, mentorId, payload);
 }
 
 async function main() {
@@ -132,59 +129,88 @@ async function main() {
   const url = (option(args, "--url") || "").replace(/\/$/, "");
   const sessionDir = resolve(option(args, "--session") || "");
   if (!url || !option(args, "--session")) throw new Error("Usage: adapter.mjs --url <server-url> --session <session-dir>");
-  const session = JSON.parse(await readFile(resolve(sessionDir, "session.json"), "utf8"));
-  const token = option(args, "--token") || session.security?.accessToken;
+  const saved = JSON.parse(await readFile(resolve(sessionDir, "session.json"), "utf8"));
+  const token = option(args, "--token") || saved.security?.accessToken;
   if (!token) throw new Error("Session has no access token.");
-  const mentorId = randomUUID();
-  let stopping = false;
-  const stop = () => { stopping = true; if (activeProviderChild?.exitCode === null) activeProviderChild.kill("SIGINT"); };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  if (!saved.agentSessionId) throw new Error("Session has no persistent Pi mentor session id.");
+  await mkdir(join(sessionDir, "runtime", "mentor-sessions"), { recursive: true });
 
-  await preflightPi(sessionDir);
+  const command = saved.assembly?.capabilities?.commands?.pi || "pi";
+  await preflightPi({ command, sessionDir, model: saved.mentorModel, topic: saved.topic });
+  const rpc = await createRpcClient({
+    command,
+    sessionDir,
+    sessionId: saved.agentSessionId,
+    model: saved.mentorModel,
+    topic: saved.topic,
+  });
+  let activeModel = saved.mentorModel || null;
+  const mentorId = randomUUID();
+  const pollController = new AbortController();
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    pollController.abort();
+    try { await rpc.abort(); } catch {}
+    rpc.close();
+  };
+  process.once("SIGINT", () => { void stop(); });
+  process.once("SIGTERM", () => { void stop(); });
+
   await requestJson(url, "/api/mentor/register", token, { method: "POST", body: JSON.stringify({ mentorId, takeover: true }) });
   await mentorPost(url, "/api/mentor/ready", token, mentorId, {});
 
   while (!stopping) {
     const query = new URLSearchParams({ token, mentorId });
-    const poll = await fetch(`${url}/api/mentor/next?${query}`);
+    let poll;
+    try {
+      poll = await fetch(`${url}/api/mentor/next?${query}`, { signal: pollController.signal });
+    } catch (error) {
+      if (stopping) break;
+      throw error;
+    }
     if (poll.status === 204) continue;
     const item = await poll.json().catch(() => null);
     if (!poll.ok) throw new Error(`Mentor poll failed: ${poll.status} ${JSON.stringify(item)}`);
     if (!item) continue;
     const runId = randomUUID();
-    await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_STARTED", threadId: session.slug, runId });
+    await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_STARTED", threadId: saved.slug, runId, turnId: item.mentorTurn?.id });
     try {
       const before = await requestJson(url, "/api/session", token);
-      let answer = await runPi({ sessionDir, prompt: mentorPrompt(session.topic, item, (before.transcript || []).slice(-12)) });
-      let canvas = await canvasPayload(url, token, answer);
+      if (before.mentorModel && before.mentorModel !== activeModel) {
+        await rpc.setModel(before.mentorModel);
+        activeModel = before.mentorModel;
+      }
+      const history = before.mentorSessionInitialized
+        ? []
+        : (before.transcript || []).filter((message) => message.id !== item.message?.id).slice(-12);
+      let turn = await rpc.prompt(mentorEventPrompt(item, history));
+      let candidate = candidateFromPiTurn(turn);
       try {
-        await mentorPost(url, "/api/a2ui?validate=1", token, mentorId, canvas);
-      } catch (validationError) {
-        answer = await runPi({
-          sessionDir,
-          prompt: `${mentorPrompt(session.topic, item, (before.transcript || []).slice(-12))}\n\nYour previous structured response was rejected before the learner saw your claim: ${validationError.message}\nReturn one corrected response. Preserve the intended learner message, but make a2ui_jsonl valid. updateComponents merges by id, so every existing component must remain reachable from root unless you delete and recreate the surface.`,
+        await commitTurn({
+          url, token, mentorId, item, before, candidate, runId,
+          initializeSession: !before.mentorSessionInitialized,
         });
-        canvas = await canvasPayload(url, token, answer);
-        await mentorPost(url, "/api/a2ui?validate=1", token, mentorId, canvas);
+      } catch (error) {
+        if (!(error instanceof MentorHttpError) || error.status !== 400) throw error;
+        turn = await rpc.prompt(`Your structured browser candidate was rejected before publication: ${error.body?.error || error.message}\nCorrect the candidate. Preserve the useful learner answer. Call complete_mentor_turn exactly once.`);
+        candidate = candidateFromPiTurn(turn);
+        const current = await requestJson(url, "/api/session", token);
+        await commitTurn({
+          url, token, mentorId, item, before: current, candidate, runId,
+          initializeSession: !current.mentorSessionInitialized,
+        });
       }
-      const current = await requestJson(url, "/api/session", token);
-      if (mentorItemIsSuperseded(item, current)) {
-        await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_FINISHED", threadId: session.slug, runId, outcome: { type: "cancelled", reason: "newer_learner_message" } });
-        continue;
-      }
-      const learnerContext = item.type === "user_message" && item.message?.source === "work" ? item.message.context : null;
-      const executionContext = item.type === "execution_result" && item.componentId ? { componentId: item.componentId, label: `${item.language || "code"} code` } : null;
-      const context = answer.target_component_id ? { componentId: answer.target_component_id, ...(answer.target_quote ? { quote: answer.target_quote } : {}) } : learnerContext || executionContext;
-      const metadata = context ? { source: "work", context } : {};
-      if (answer.focus === "chat") await mentorPost(url, "/api/a2ui", token, mentorId, canvas);
-      await sendText(url, token, mentorId, answer.message, metadata);
-      if (answer.focus === "work") await mentorPost(url, "/api/a2ui", token, mentorId, canvas);
-      await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_FINISHED", threadId: session.slug, runId, outcome: { type: "success" } });
     } catch (error) {
       if (stopping) break;
-      await sendText(url, token, mentorId, `Mentor failed to respond: ${error.message}`);
-      await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_ERROR", message: error.message, code: "MENTOR_ERROR" });
+      await mentorPost(url, "/api/mentor/event", token, mentorId, {
+        type: "RUN_ERROR",
+        message: error.message,
+        code: "MENTOR_ERROR",
+        turnId: item.mentorTurn?.id,
+        runId,
+      }).catch(() => {});
     }
   }
 }

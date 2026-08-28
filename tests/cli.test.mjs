@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,6 +117,33 @@ test("public CLI start serves the assembled workspace and shuts down cleanly", a
     child = null;
   } finally {
     if (child && !child.killed) child.kill("SIGTERM");
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI start rejects a stale assembly before server state can mutate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-cli-stale-start-"));
+  try {
+    const created = JSON.parse((await execFileAsync(process.execPath, [
+      cli,
+      "create",
+      "Stale assembly",
+      "--root",
+      root,
+      "--profile",
+      "portable-shell",
+      "--json",
+    ])).stdout);
+    const session = JSON.parse(await readFile(created.sessionPath, "utf8"));
+    session.assembly.blockVersions["web.a2ui-canvas"] = 1;
+    await writeFile(created.sessionPath, `${JSON.stringify(session, null, 2)}\n`, "utf8");
+
+    await assert.rejects(
+      execFileAsync(process.execPath, [cli, "start", "--session", created.sessionDir, "--no-open", "--no-mentor", "--json"]),
+      /requires explicit migration/i,
+    );
+    assert.deepEqual(JSON.parse(await readFile(created.sessionPath, "utf8")), session);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

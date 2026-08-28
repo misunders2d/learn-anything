@@ -23,21 +23,28 @@ test("profile selection prefers verified capabilities rather than harness branch
   const pi = selectProfile(profiles, {
     harness: "pi",
     commands: { pi: "/usr/bin/pi", claude: "/usr/bin/claude", codex: "/usr/bin/codex" },
+    features: { piPersistentMentor: true },
+  });
+  const legacyPi = selectProfile(profiles, {
+    harness: "pi",
+    commands: { pi: "/usr/bin/pi", codex: "/usr/bin/codex" },
+    features: { piPersistentMentor: false },
   });
   const codexOnly = selectProfile(profiles, {
     harness: "future-agent",
     commands: { codex: "/usr/bin/codex" },
   });
-  const unknown = selectProfile(profiles, {
+  assert.throws(() => selectProfile(profiles, {
     harness: "future-agent",
     commands: {},
-  });
+  }), /No compatible learn-anything profile/i);
 
   assert.equal(claude.id, "reference-streaming");
   assert.equal(omp.id, "reference-streaming");
   assert.equal(pi.id, "pi-cli");
+  assert.equal(legacyPi.id, "codex-cli");
   assert.equal(codexOnly.id, "codex-cli");
-  assert.equal(unknown.id, "portable-shell");
+  assert.equal(profiles.find((profile) => profile.id === "portable-shell").selection.manualOnly, true);
 });
 
 test("mentor runtime resolves the adapter declared by the composition", async () => {
@@ -64,10 +71,13 @@ test("mentor runtime resolves the native Pi adapter", async () => {
   }, catalog, kitRoot);
 
   assert.equal(descriptor.id, "adapter.pi-cli");
+  assert.equal(descriptor.protocolVersion, 2);
   assert.match(descriptor.entry, /blocks\/adapters\/pi-cli\/adapter\.mjs$/);
   assert.equal(descriptor.capabilities.resume, true);
   assert.equal(descriptor.capabilities.streaming, false);
-  assert.equal(descriptor.capabilities.interrupt, "process");
+  assert.equal(descriptor.capabilities.interrupt, "rpc");
+  assert.equal(descriptor.capabilities.structuredTurns, true);
+  assert.equal(descriptor.capabilities.atomicCommit, true);
 });
 
 test("manual adapter is not misrepresented as a persistent mentor", async () => {

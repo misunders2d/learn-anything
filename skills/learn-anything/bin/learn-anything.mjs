@@ -3,11 +3,11 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { resolve } from "node:path";
-import { constructSession, kitRoot } from "../scripts/construct.mjs";
+import { constructSession, kitRoot, validateSessionForStart } from "../scripts/construct.mjs";
 import { probeCapabilities } from "../scripts/probe.mjs";
 import { smokeSession } from "../scripts/smoke.mjs";
 import { watchOwnerProcess } from "../scripts/process-lifecycle.mjs";
-import { loadBlockCatalog, MentorSupervisor, resolveMentorAdapter } from "../blocks/adapters/runtime.mjs";
+import { loadBlockCatalog, loadProfiles, MentorSupervisor, resolveMentorAdapter } from "../blocks/adapters/runtime.mjs";
 import { createLearnAnythingServer } from "../blocks/server/server.mjs";
 
 function option(args, name, fallback = null) {
@@ -41,6 +41,14 @@ function openBrowser(url, opener) {
   const child = spawn(command, args, { detached: true, stdio: "ignore", shell: false });
   child.unref();
   return true;
+}
+
+async function validatedSavedSession(sessionDir) {
+  const session = JSON.parse(await readFile(resolve(sessionDir, "session.json"), "utf8"));
+  const capabilities = probeCapabilities();
+  const [profiles, catalog] = await Promise.all([loadProfiles(kitRoot), loadBlockCatalog(kitRoot)]);
+  validateSessionForStart(session, { capabilities, profiles, catalog });
+  return { session, capabilities };
 }
 
 async function loadMentorDescriptor(sessionDir) {
@@ -83,6 +91,7 @@ async function main() {
   if (command === "smoke") {
     const sessionDir = option(args, "--session");
     if (!sessionDir) throw new Error("--session is required.");
+    await validatedSavedSession(sessionDir);
     output(await smokeSession(sessionDir, { kitRoot }), json);
     return;
   }
@@ -93,7 +102,7 @@ async function main() {
     const host = option(args, "--host", "127.0.0.1");
     const requestedPort = Number(option(args, "--port", "0"));
     if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new Error("--port must be an integer from 0 through 65535.");
-    const savedSession = JSON.parse(await readFile(resolve(sessionDir, "session.json"), "utf8"));
+    const { session: savedSession, capabilities } = await validatedSavedSession(sessionDir);
     if (savedSession.assembly?.validation?.status !== "passed") {
       await smokeSession(sessionDir, { kitRoot });
     }
@@ -134,7 +143,6 @@ async function main() {
       }
       clearOwnerWatch = watchOwnerProcess({ ownerPid, onOwnerExit: stop });
       runtime.setBrowserDisconnectHandler(stop);
-      const capabilities = probeCapabilities();
       const shouldOpen = has(args, "--open") && !has(args, "--no-open");
       const opened = shouldOpen ? openBrowser(address.launchUrl, capabilities.browserOpener) : false;
       output({ ...address, opened, mentorAttached: Boolean(supervisor?.child), mentorCapabilities: mentorDescriptor?.capabilities || null, sessionDir: resolve(sessionDir) }, json);

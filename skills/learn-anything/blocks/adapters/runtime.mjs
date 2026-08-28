@@ -21,10 +21,18 @@ export async function loadProfiles(kitRoot) {
   return profiles;
 }
 
-function matchesProfile(profile, capabilities) {
+export function assemblyBlockVersionMismatch(session, catalog) {
+  return (session.assembly?.blocks || []).some((id) => {
+    const block = catalog.blocks.find((candidate) => candidate.id === id);
+    return !block || Number(session.assembly?.blockVersions?.[id]) !== Number(block.version || 1);
+  });
+}
+
+export function profileMatchesCapabilities(profile, capabilities) {
   const selection = profile.selection || {};
   if (selection.harnesses?.length && !selection.harnesses.includes(capabilities.harness)) return false;
-  return (selection.requiredCommands || []).every((command) => Boolean(capabilities.commands?.[command]));
+  if (!(selection.requiredCommands || []).every((command) => Boolean(capabilities.commands?.[command]))) return false;
+  return (selection.requiredCapabilities || []).every((capability) => capabilities.features?.[capability] === true);
 }
 
 function profileScore(profile, capabilities) {
@@ -35,7 +43,8 @@ function profileScore(profile, capabilities) {
 
 export function selectProfile(profiles, capabilities) {
   const candidates = profiles
-    .filter((profile) => matchesProfile(profile, capabilities))
+    .filter((profile) => profile.selection?.manualOnly !== true)
+    .filter((profile) => profileMatchesCapabilities(profile, capabilities))
     .sort((left, right) => profileScore(right, capabilities) - profileScore(left, capabilities));
   const selected = candidates[0];
   if (!selected) throw new Error("No compatible learn-anything profile is available.");

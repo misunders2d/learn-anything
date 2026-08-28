@@ -3,7 +3,7 @@
   "blocks": [
     {
       "id": "server.node-sse",
-      "version": 1,
+      "version": 2,
       "kind": "server",
       "path": "blocks/server/server.mjs",
       "requires": ["node>=20"],
@@ -12,7 +12,7 @@
     },
     {
       "id": "web.a2ui-canvas",
-      "version": 2,
+      "version": 3,
       "kind": "frontend",
       "path": "blocks/web/dist",
       "requires": ["built-web-assets"],
@@ -69,20 +69,20 @@
     },
     {
       "id": "adapter.pi-cli",
-      "version": 1,
+      "version": 3,
       "kind": "mentor-adapter",
       "path": "blocks/adapters/pi-cli/adapter.mjs",
       "requires": ["pi-cli-auth", "node>=20"],
-      "provides": ["persistent-mentor", "session-resume", "canvas-updates"],
+      "provides": ["persistent-mentor", "session-resume", "per-course-model-selection", "canvas-updates"],
       "runtime": {
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "runtime": "node",
         "entry": "blocks/adapters/pi-cli/adapter.mjs",
         "persistent": true,
-        "capabilities": { "streaming": false, "interrupt": "process", "resume": true }
+        "capabilities": { "streaming": false, "interrupt": "rpc", "resume": true, "structuredTurns": true, "atomicCommit": true }
       },
       "degraded": ["turn-complete-output"],
-      "smokeCheck": "real browser message reaches pi --print and returns mentor text"
+      "smokeCheck": "real browser message reaches persistent Pi RPC, completes the typed mentor tool, and commits one browser turn"
     },
     {
       "id": "execution.container",

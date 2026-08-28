@@ -267,10 +267,22 @@ try {
   const constructed = await constructSession({
     topic: "Browser acceptance",
     root: temp,
-    profile: "portable-shell",
+    profile: "pi-cli",
     env: {},
   });
-  runtime = await createLearnAnythingServer({ sessionDir: constructed.sessionDir, kitRoot, port: 0 });
+  runtime = await createLearnAnythingServer({
+    sessionDir: constructed.sessionDir,
+    kitRoot,
+    port: 0,
+    modelCatalogLoader: async () => ({
+      defaultModel: "openai-codex/gpt-5.6-sol",
+      models: [
+        { id: "openai-codex/gpt-5.6-sol", provider: "openai-codex", model: "gpt-5.6-sol" },
+        { id: "openai-codex/gpt-5.4-mini", provider: "openai-codex", model: "gpt-5.4-mini" },
+        ...Array.from({ length: 120 }, (_, index) => ({ id: `provider-${index}/model-${index}`, provider: `provider-${index}`, model: `model-${index}` })),
+      ],
+    }),
+  });
   const address = await runtime.listen();
   listening = true;
   const mentorId = "browser-acceptance-mentor";
@@ -327,11 +339,40 @@ try {
   record("learner-facing-capability-labels");
   record("non-code-stage-hides-console");
 
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.mentor-pane input[aria-label=\"Mentor model\"]'))"), "mentor model selector");
+  assert.equal(await browser.evaluate("document.querySelector('.mentor-pane input[aria-label=\"Mentor model\"]')?.value"), "openai-codex/gpt-5.6-sol");
+  await browser.evaluate(`(() => {
+    const input = document.querySelector('.mentor-pane input[aria-label="Mentor model"]');
+    input.focus();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'provider-119');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await waitFor(() => browser.evaluate("document.querySelectorAll('.mentor-pane .model-options [role=\"option\"]').length === 1"), "filtered mentor model results");
+  assert.ok(await browser.evaluate("document.querySelector('.mentor-pane .model-options')?.innerText.includes('model-119')"));
+  assert.equal(await browser.evaluate(`(() => {
+    const rect = document.querySelector('.mentor-pane .model-options').getBoundingClientRect();
+    return rect.left >= 0 && rect.right <= innerWidth;
+  })()`), true);
+  assert.equal(await browser.evaluate("Boolean(document.querySelector('.selection-actions'))"), false);
+  record("mentor-model-picker-filters-large-catalog");
+  record("mentor-model-picker-stays-inside-viewport");
+  await browser.evaluate(`(() => {
+    const input = document.querySelector('.mentor-pane input[aria-label="Mentor model"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'openai-codex/gpt-5.4-mini');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await waitFor(async () => (await api(address, "/api/session")).mentorModel === "openai-codex/gpt-5.4-mini", "persisted mentor model selection");
+  assert.equal(await browser.evaluate("document.querySelector('.mentor-pane input[aria-label=\"Mentor model\"]')?.value"), "openai-codex/gpt-5.4-mini");
+  record("per-course-mentor-model-selected-and-persisted");
+
   const unsentQuestion = "draft survives refresh";
   await setComposer(browser, unsentQuestion);
   await browser.call("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("Boolean(document.querySelector('.workspace'))"), "workspace after draft refresh");
   assert.equal(await browser.evaluate("document.querySelector('.mentor-pane textarea').value"), unsentQuestion);
+  await waitFor(() => browser.evaluate("document.querySelector('.mentor-pane input[aria-label=\"Mentor model\"]')?.value === 'openai-codex/gpt-5.4-mini'"), "mentor model after refresh");
   record("unsent-question-draft-restored");
 
   const mentorPoll = fetch(`${address.url}/api/mentor/next?${new URLSearchParams({ token: address.accessToken, mentorId })}`)
@@ -408,6 +449,20 @@ try {
   ]) await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify(event) }, mentorId);
   await renderCanvas(address, workStage, mentorId);
   await assertView(browser, "work");
+  const workHeaderLayout = await browser.evaluate(`(() => {
+    const rescue = document.getElementById('mentor-rescue').getBoundingClientRect();
+    const picker = document.querySelector('.stage-pane .model-picker-wrap').getBoundingClientRect();
+    const instruction = document.querySelector('[data-component-id="task"]')?.getBoundingClientRect();
+    const viewport = document.querySelector('.stage-scroll').getBoundingClientRect();
+    return {
+      overlap: !(picker.right <= rescue.left || picker.left >= rescue.right || picker.bottom <= rescue.top || picker.top >= rescue.bottom),
+      instructionVisible: Boolean(instruction) && instruction.bottom > viewport.top && instruction.top < viewport.bottom,
+    };
+  })()`);
+  assert.equal(workHeaderLayout.overlap, false, "mentor rescue must not overlap model picker");
+  assert.equal(workHeaderLayout.instructionVisible, true, "current lesson content must be visible after repaint");
+  record("work-header-controls-do-not-overlap");
+  record("current-lesson-content-visible-after-repaint");
   await waitFor(() => browser.evaluate("document.querySelector('.stage-pane').contains(document.activeElement)"), "focus moves into work surface");
   assert.ok(await browser.evaluate("document.querySelector('.work-mentor-lead')?.innerText.includes('must remain visible')"));
   await waitFor(() => browser.evaluate("document.querySelector('.stage-pane .course-continuation')?.innerText.toLowerCase().includes('next step') === true"), "work continuation cue");
@@ -418,6 +473,22 @@ try {
   await renderCanvas(address, { ...workStage, focus: "chat" }, mentorId);
   await assertView(browser, "chat");
   await waitFor(() => browser.evaluate("document.querySelector('.mentor-pane .course-continuation')?.innerText.toLowerCase().includes('your turn') === true"), "chat continuation cue");
+  await browser.call("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 1, mobile: false });
+  await assertView(browser, "chat");
+  const compactChatHeader = await browser.evaluate(`(() => {
+    const brand = document.querySelector('.mentor-pane .brand-lockup').getBoundingClientRect();
+    const actions = document.querySelector('.mentor-pane .header-actions').getBoundingClientRect();
+    const rescue = document.getElementById('mentor-rescue').getBoundingClientRect();
+    return {
+      separated: brand.right <= actions.left && actions.right <= rescue.left,
+      contained: document.querySelector('.app-header').scrollWidth <= document.querySelector('.app-header').clientWidth + 1,
+    };
+  })()`);
+  assert.equal(compactChatHeader.separated, true, "compact chat header controls must not overlap");
+  assert.equal(compactChatHeader.contained, true, "compact chat header must not overflow");
+  record("compact-chat-header-controls-do-not-overlap");
+  await browser.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+  await assertView(browser, "chat");
   assert.equal(await browser.evaluate("document.getElementById('mentor-rescue').textContent"), "Back to activity");
   await browser.evaluate("document.getElementById('mentor-rescue').click()");
   await assertView(browser, "work", { returned: true });

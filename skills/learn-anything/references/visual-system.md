@@ -37,7 +37,7 @@ Check rendered foreground/background pairs, focus indicators, disabled controls,
 - Offline/stale/stopped: explain what happened, what remains saved, and the exact recovery action. Never loop on an indefinite connection label.
 - Failed component: contain failure locally and preserve the rest of the activity and rescue path.
 
-The mentor controls chat/work focus. The learner never manages layout. Both regions stay mounted so state survives transitions.
+The mentor controls chat/work focus. The learner never manages layout. Both regions stay mounted so state survives transitions. When the active adapter supports per-course model selection, keep the labeled picker compact in the visible header; it is a utility, not the focal action, and its wording must make clear that the next mentor turn changes while course context remains.
 
 ## Components
 

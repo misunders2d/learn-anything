@@ -1,7 +1,7 @@
 {
   "id": "portable-shell",
-  "description": "Portable composition for local coding agents that have shell tools but no supported headless streaming adapter.",
-  "selection": { "priority": 0 },
+  "description": "Explicit manual/degraded composition for local coding agents without a supported persistent mentor adapter; never selected automatically as live mentorship.",
+  "selection": { "priority": 0, "manualOnly": true },
   "blocks": [
     "server.node-sse",
     "web.a2ui-canvas",

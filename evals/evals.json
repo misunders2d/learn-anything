@@ -232,6 +232,32 @@
         "The agent verifies logical right-to-left layout, long-content resilience, keyboard order, visible focus, and reduced-motion final states in the real browser.",
         "The agent measures rendered WCAG 2.2 AA contrast and reports any loading, empty, error, disabled, success, or other relevant state it did not exercise."
       ]
+    },
+    {
+      "id": 21,
+      "prompt": "Use the frontier agent to build my course, but let me choose any authenticated Pi model for the browser mentor and switch to a faster one without losing course context.",
+      "expected_output": "The frontier agent remains the constructor while the Pi browser mentor uses one course-owned persistent session and a browser model selector whose choice applies to the next mentor turn.",
+      "files": [],
+      "expectations": [
+        "The Pi mentor does not use --no-session for ordinary course turns and retains one stable session id across course restarts.",
+        "The browser lists all currently available authenticated Pi models without exposing credentials.",
+        "Changing the model persists only for this course, does not change the frontier agent, and does not replace the mentor session or enqueue a mentor turn.",
+        "An existing browser transcript bootstraps a newly created persistent mentor session once instead of being reconstructed on every turn."
+      ]
+    },
+    {
+      "id": 22,
+      "prompt": "My Python decorators course already has a visible exercise. From the work composer I ask: ‘Почему декораторы вообще нужны, если можно просто вызвать другую функцию?’ Keep my work safe and answer normally even if the mentor omits a question mark or refuses structured UI output.",
+      "expected_output": "The persistent Pi mentor returns a useful learner answer without parsing model-generated JSON, treats composer location separately from intent, and commits any accepted browser turn atomically.",
+      "files": [],
+      "expectations": [
+        "The Pi adapter consumes RPC protocol events and one schema-validated terminating mentor tool instead of extracting braces, code fences, or A2UI JSONL from assistant prose.",
+        "An unanchored broad question from the work composer may open chat while preserving Back to activity; only an explicit component anchor forces inline work presentation.",
+        "Missing punctuation is normalized by host policy and cannot discard an otherwise useful answer.",
+        "Plain assistant prose is a safe text-only fallback with no canvas mutation when a model does not call the tool.",
+        "Transcript, focus, canvas, continuation, and completion commit together; malformed canvas data leaves the last good state unchanged.",
+        "Provider and protocol failures remain durable operational diagnostics and never appear as fake mentor teaching messages."
+      ]
     }
   ]
 }

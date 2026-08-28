@@ -106,6 +106,104 @@ function Markdown({ content, className = "" }) {
   return <div className={`message-markdown ${className}`} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
+function ModelPicker({ id, catalog, selectedModel, changing, error, onChange }) {
+  const [draft, setDraft] = useState(selectedModel || "");
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const wrapRef = useRef(null);
+  const models = catalog?.models || [];
+  const query = draft.trim().toLowerCase();
+  const matches = useMemo(() => {
+    const tokens = query.split(/\s+/).filter(Boolean);
+    return models.filter((model) => {
+      const searchable = `${model.provider} ${model.model} ${model.id}`.toLowerCase();
+      return tokens.every((token) => searchable.includes(token));
+    });
+  }, [catalog?.models, query]);
+  const visibleModels = matches.slice(0, 40);
+  useEffect(() => setDraft(selectedModel || ""), [selectedModel]);
+  useEffect(() => setActiveIndex(0), [query]);
+  if (!catalog) return error ? <span className="model-picker-error" role="status" title={error}>Models unavailable</span> : null;
+  if (!catalog.supported) return null;
+  const optionsId = `mentor-models-${id}`;
+  const commit = (model) => {
+    if (!model) return;
+    setDraft(model.id);
+    setOpen(false);
+    if (model.id !== selectedModel) onChange(model.id);
+  };
+  const updateDraft = (value) => {
+    setDraft(value);
+    setOpen(true);
+    const exact = models.find((model) => model.id === value);
+    if (exact && exact.id !== selectedModel) commit(exact);
+  };
+  return (
+    <div ref={wrapRef} className="model-picker-wrap">
+      <label className="model-picker" title="Next mentor turn uses this model while course context stays in the same session">
+        <span>Mentor</span>
+        <input
+          type="search"
+          role="combobox"
+          aria-label="Mentor model"
+          aria-describedby={`${optionsId}-help`}
+          aria-controls={optionsId}
+          aria-expanded={open}
+          aria-autocomplete="list"
+          aria-activedescendant={open && visibleModels[activeIndex] ? `${optionsId}-${activeIndex}` : undefined}
+          value={draft}
+          disabled={changing || models.length === 0}
+          onFocus={(event) => { event.currentTarget.select(); setOpen(true); }}
+          onChange={(event) => updateDraft(event.target.value)}
+          onBlur={(event) => {
+            if (wrapRef.current?.contains(event.relatedTarget)) return;
+            setOpen(false);
+            if (!models.some((model) => model.id === draft)) setDraft(selectedModel || "");
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              setOpen(true);
+              const direction = event.key === "ArrowDown" ? 1 : -1;
+              setActiveIndex((current) => Math.max(0, Math.min(visibleModels.length - 1, current + direction)));
+            } else if (event.key === "Enter" && open) {
+              event.preventDefault();
+              commit(visibleModels[activeIndex]);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              setDraft(selectedModel || "");
+              setOpen(false);
+            }
+          }}
+          placeholder="Search models"
+          autoComplete="off"
+        />
+        <span id={`${optionsId}-help`} className="visually-hidden">Search available models. The selected model handles the next mentor turn. Course context stays in the same mentor session.</span>
+      </label>
+      {open && <div id={optionsId} className="model-options" role="listbox" aria-label="Available mentor models">
+        <div className="model-options-summary">{matches.length === 0 ? "No matching models" : `${matches.length} model${matches.length === 1 ? "" : "s"}`}</div>
+        {visibleModels.map((model, index) => (
+          <button
+            key={model.id}
+            id={`${optionsId}-${index}`}
+            type="button"
+            role="option"
+            aria-selected={model.id === selectedModel}
+            data-active={index === activeIndex ? "1" : "0"}
+            onPointerDown={(event) => event.preventDefault()}
+            onMouseEnter={() => setActiveIndex(index)}
+            onClick={() => commit(model)}
+          >
+            <span>{model.model}</span><small>{model.provider}</small>
+          </button>
+        ))}
+        {matches.length > visibleModels.length && <div className="model-options-more">Keep typing to narrow {matches.length} matches</div>}
+      </div>}
+      {error && <span className="model-picker-error" role="status" title={error}>Change failed</span>}
+    </div>
+  );
+}
+
 function WorkspaceStatus({ connected, mentorAttached, degraded, hasRunnableCode }) {
   const notices = [...new Set((degraded || []).flatMap((item) => {
     if (item === "host-execution-full-user-permissions") return hasRunnableCode ? ["code has full local permissions"] : [];
@@ -559,6 +657,10 @@ function App() {
   const [workContext, setWorkContext] = useState(null);
   const [selectionMenu, setSelectionMenu] = useState(null);
   const [mentorState, setMentorState] = useState("idle");
+  const [modelCatalog, setModelCatalog] = useState(null);
+  const [mentorModel, setMentorModel] = useState("");
+  const [modelChanging, setModelChanging] = useState(false);
+  const [modelError, setModelError] = useState("");
   const partial = useRef(new Map());
   const rescueQuestionPending = useRef(false);
   const rescueReplyCompleted = useRef(false);
@@ -619,9 +721,16 @@ function App() {
     const changed = Boolean(taskKey && taskKey !== previousTaskKey.current);
     previousTaskKey.current = taskKey;
     if (focus === "work" && changed) requestAnimationFrame(() => {
-      const instruction = [...(stageScrollRef.current?.querySelectorAll("[data-component-id]") || [])]
-        .find((element) => element.dataset.componentId === taskInstructionId);
-      instruction?.scrollIntoView({ behavior: "auto", block: "start" });
+      const revealInstruction = () => {
+        const stage = stageScrollRef.current;
+        if (!stage) return;
+        const instruction = [...stage.querySelectorAll("[data-component-id]")]
+          .find((element) => element.dataset.componentId === taskInstructionId);
+        if (instruction) instruction.scrollIntoView({ behavior: "auto", block: "start" });
+        else stage.scrollTop = 0;
+      };
+      revealInstruction();
+      requestAnimationFrame(revealInstruction);
     });
   }, [focus, taskInstructionId, taskKey]);
 
@@ -683,6 +792,19 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    api("/api/models").then((catalog) => {
+      if (cancelled) return;
+      setModelCatalog(catalog);
+      setMentorModel(catalog.selectedModel || "");
+      setModelError("");
+    }).catch((error) => {
+      if (!cancelled) setModelError(error.message);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     let source = null;
     let cancelled = false;
     let lossTimer = null;
@@ -733,6 +855,7 @@ function App() {
         });
         setContinuation(event.snapshot.continuation || null);
         setDegraded(event.snapshot.assembly?.degraded || []);
+        if (event.snapshot.mentorModel) setMentorModel(event.snapshot.mentorModel);
         setMentorState(event.snapshot.mentorState || "idle");
         setMentorAttached(Boolean(event.snapshot.mentorAttached));
       } else if (event.type === "TEXT_MESSAGE_START") {
@@ -754,6 +877,20 @@ function App() {
             releaseRescueIfReady(canvasRef.current, true);
           }
         }
+      } else if (event.type === "CUSTOM" && event.name === "mentor_turn") {
+        if (event.value?.message) setMessages((current) => upsertMessage(current, event.value.message));
+        if (event.value?.continuation) setContinuation(event.value.continuation);
+        setCanvas((current) => {
+          const next = applyCanvasPayload(current, event.value?.canvas);
+          canvasRef.current = next;
+          releaseRescueIfReady(next, true);
+          return next;
+        });
+        setMentorState("idle");
+        if (rescueQuestionPending.current) {
+          rescueReplyCompleted.current = true;
+          releaseRescueIfReady(canvasRef.current, true);
+        }
       } else if (event.type === "CUSTOM" && event.name === "a2ui") {
         if (event.value?.continuation) setContinuation(event.value.continuation);
         setCanvas((current) => {
@@ -766,6 +903,8 @@ function App() {
         setMentorAttached(Boolean(event.value?.attached));
       } else if (event.type === "CUSTOM" && event.name === "mentor_state") {
         setMentorState(event.value?.state || "idle");
+      } else if (event.type === "CUSTOM" && event.name === "mentor_model") {
+        setMentorModel(event.value?.model || "");
       }
       };
     }
@@ -785,6 +924,10 @@ function App() {
 
   function captureSelection(event) {
     if (event.target.closest?.(".selection-actions")) return;
+    if (event.target.closest?.(".model-picker-wrap")) {
+      setSelectionMenu(null);
+      return;
+    }
     setSelectionMenu(selectionDetails(event));
   }
 
@@ -807,6 +950,23 @@ function App() {
     if (source === "work") setWorkContext(null);
     setSelectionMenu(null);
     requestAnimationFrame(() => (source === "work" ? workComposerRef.current : composerRef.current)?.focus());
+  }
+
+  async function changeMentorModel(model) {
+    if (!model || model === mentorModel || modelChanging) return;
+    setModelChanging(true);
+    setModelError("");
+    try {
+      const result = await api("/api/model", {
+        method: "POST",
+        body: JSON.stringify({ model }),
+      });
+      setMentorModel(result.selectedModel || model);
+    } catch (error) {
+      setModelError(error.message);
+    } finally {
+      setModelChanging(false);
+    }
   }
 
   async function submitCode({ componentId, code }) {
@@ -889,7 +1049,10 @@ function App() {
         <header className="app-header">
           <div className="brand-lockup"><span className="brand-mark">L</span><span>Learn anything</span></div>
           {!emptyConversation && <h1>{topic}</h1>}
-          <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
+          <div className="header-actions">
+            <ModelPicker id="chat" catalog={modelCatalog} selectedModel={mentorModel} changing={modelChanging} error={modelError} onChange={changeMentorModel} />
+            <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
+          </div>
         </header>
         {emptyConversation ? (
           <div className="welcome-shell">
@@ -915,7 +1078,10 @@ function App() {
       <section className="stage-pane" dir={canvasDirection} aria-label="Agent-generated learning canvas">
         <header className="stage-header">
           <div><span className="stage-topic">{topic}</span><h2 id="stage-title">{canvasTitle}</h2></div>
-          <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
+          <div className="header-actions">
+            <ModelPicker id="work" catalog={modelCatalog} selectedModel={mentorModel} changing={modelChanging} error={modelError} onChange={changeMentorModel} />
+            <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
+          </div>
         </header>
         <div ref={stageScrollRef} className="stage-scroll scroll-region" tabIndex="-1" aria-labelledby="stage-title">
           <div className="stage-column">
@@ -925,7 +1091,7 @@ function App() {
             </section>}
             {surface?.components?.root
               ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} onParameterChange={updateParameter} onSubmitToMentor={submitCode} replyFor={replyFor} />
-              : null}
+              : <section className="activity-error" role="status">Lesson content is unavailable. Use Ask mentor to restore this activity.</section>}
             {workExchange && !workExchange.answer?.context?.componentId && <section className="work-mentor-reply">
               <div className="anchored-note-label">Your question</div>
               <Markdown content={workExchange.question.content} />

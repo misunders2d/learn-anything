@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { constructSession, slugifyTopic } from "../skills/learn-anything/scripts/construct.mjs";
-import { probeCapabilities } from "../skills/learn-anything/scripts/probe.mjs";
+import { constructSession, slugifyTopic, validateSessionForStart } from "../skills/learn-anything/scripts/construct.mjs";
+import { inspectPiCli, probeCapabilities } from "../skills/learn-anything/scripts/probe.mjs";
 
 test("slugifyTopic creates stable bounded session names", () => {
   assert.equal(slugifyTopic(" Rust: Ownership & Lifetimes! "), "rust-ownership-lifetimes");
@@ -20,7 +20,32 @@ test("probe reports constructor-relevant capabilities", () => {
   assert.equal(typeof result.languages.sql, "boolean");
   assert.ok("containerRuntime" in result);
   assert.ok("pi" in result.commands);
+  assert.equal(typeof result.features.piPersistentMentor, "boolean");
   assert.ok(Array.isArray(result.warnings));
+});
+
+test("Pi capability probe rejects legacy CLIs without persistent course flags", () => {
+  const current = inspectPiCli("/usr/bin/pi", () => ({
+    status: 0,
+    stdout: "--session-id --session-dir --model --list-models --system-prompt --name --mode --no-builtin-tools --tools --extension --no-prompt-templates",
+    stderr: "",
+  }));
+  const legacy = inspectPiCli("/usr/bin/pi", () => ({
+    status: 0,
+    stdout: "--session --model",
+    stderr: "",
+  }));
+  assert.equal(current.persistentMentor, true);
+  assert.equal(legacy.persistentMentor, false);
+
+  const capabilities = probeCapabilities({
+    env: { PI_CODING_AGENT: "1" },
+    platform: "linux",
+    resolveCommand: (command) => command === "node" || command === "pi" ? `/usr/bin/${command}` : null,
+    inspectPi: () => legacy,
+  });
+  assert.equal(capabilities.features.piPersistentMentor, false);
+  assert.match(capabilities.warnings.join(" "), /update Pi/i);
 });
 test("probe does not treat missing containers as a degradation", () => {
   const result = probeCapabilities({
@@ -55,7 +80,7 @@ test("construct creates and resumes without replacing session state", async () =
     assert.match(initial.security.accessToken, /^[A-Za-z0-9_-]{40,}$/);
     assert.equal(initial.schemaVersion, 3);
     assert.equal(initial.assembly.schemaVersion, 1);
-    assert.equal(initial.assembly.blockVersions["web.a2ui-canvas"], 2);
+    assert.equal(initial.assembly.blockVersions["web.a2ui-canvas"], 3);
     assert.equal(initial.assembly.execution.mode, "host");
 
     const second = await constructSession({ topic: "Rust lifetimes", root, env: {}, profile: "portable-shell" });
@@ -88,6 +113,12 @@ test("profile changes require explicit migration and preserve a backup", async (
     assert.equal(current.assembly.profile, "codex-cli");
     assert.equal(current.assembly.validation.status, "pending");
     assert.equal(backup.assembly.profile, "portable-shell");
+
+    const migratedAgain = await constructSession({ topic: "Migration", root, profile: "portable-shell", env: {}, migrate: true });
+    assert.equal(migratedAgain.profile, "portable-shell");
+    const secondBackup = JSON.parse(await readFile(`${first.sessionPath}.v3.1.backup`, "utf8"));
+    assert.equal(secondBackup.assembly.profile, "codex-cli");
+    assert.equal(secondBackup.transcript[0].content, "preserve me");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -164,6 +195,70 @@ test("auto profile selects the native Pi adapter in Pi", async () => {
     assert.equal(result.profile, "pi-cli");
     const session = JSON.parse(await readFile(result.sessionPath, "utf8"));
     assert.ok(session.assembly.blocks.includes("adapter.pi-cli"));
+    assert.ok(session.agentSessionId);
+    assert.equal(session.mentorSessionInitialized, false);
+    assert.equal(session.mentorModel, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("auto resume and migration fail closed when saved Pi mentor capabilities are no longer supported", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-legacy-pi-resume-"));
+  try {
+    const created = await constructSession({
+      topic: "Persistent mentor",
+      root,
+      env: { PI_CODING_AGENT: "1" },
+      profile: "pi-cli",
+    });
+    const session = JSON.parse(await readFile(created.sessionPath, "utf8"));
+    const legacyCapabilities = {
+      ...session.assembly.capabilities,
+      harness: "pi",
+      features: { ...(session.assembly.capabilities.features || {}), piPersistentMentor: false },
+    };
+    const capabilityProbe = () => legacyCapabilities;
+
+    await assert.rejects(
+      constructSession({ topic: "Persistent mentor", root, profile: "auto", capabilityProbe }),
+      /requires a Pi version.*Update Pi/i,
+    );
+    await assert.rejects(
+      constructSession({ topic: "Persistent mentor", root, profile: "auto", migrate: true, capabilityProbe }),
+      /requires a Pi version.*Update Pi/i,
+    );
+    const profiles = [{ id: "pi-cli", selection: { requiredCommands: ["pi"], requiredCapabilities: ["piPersistentMentor"] } }];
+    const catalog = { blocks: session.assembly.blocks.map((id) => ({ id, version: session.assembly.blockVersions[id] })) };
+    assert.throws(
+      () => validateSessionForStart(session, { capabilities: legacyCapabilities, profiles, catalog }),
+      /requires a Pi version.*Update Pi/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh auto construction never substitutes manual shell for unsupported Pi", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-legacy-pi-fresh-"));
+  try {
+    const legacyCapabilities = {
+      schemaVersion: 1,
+      platform: process.platform,
+      arch: process.arch,
+      node: process.version,
+      harness: "pi",
+      commands: { node: process.execPath, pi: "/usr/bin/pi", claude: null, codex: null, docker: null, podman: null },
+      features: { piPersistentMentor: false },
+      browserOpener: null,
+      containerRuntime: null,
+      languages: { javascript: true, python: false, sql: false, rust: false, java: false, c: false },
+      warnings: [],
+    };
+    await assert.rejects(
+      constructSession({ topic: "Unsupported Pi", root, profile: "auto", capabilityProbe: () => legacyCapabilities }),
+      /No compatible learn-anything profile/i,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

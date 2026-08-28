@@ -1,12 +1,12 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import process from "node:process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { probeCapabilities } from "./probe.mjs";
 import { canvasFromStage, createInitialCanvas } from "../blocks/a2ui/state.mjs";
-import { loadBlockCatalog, loadProfiles, selectProfile } from "../blocks/adapters/runtime.mjs";
+import { assemblyBlockVersionMismatch, loadBlockCatalog, loadProfiles, profileMatchesCapabilities, selectProfile } from "../blocks/adapters/runtime.mjs";
 import { selectExecution } from "../blocks/execution/runner.mjs";
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +33,19 @@ async function atomicJson(path, value) {
   await rename(temp, path);
 }
 
+async function writeMigrationBackup(sessionPath, previousVersion, session) {
+  for (let index = 0; ; index += 1) {
+    const suffix = index === 0 ? "" : `.${index}`;
+    const backupPath = `${sessionPath}.v${previousVersion}${suffix}.backup`;
+    try {
+      await writeFile(backupPath, `${JSON.stringify(session, null, 2)}\n`, { flag: "wx" });
+      return backupPath;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
+}
+
 const SESSION_SCHEMA_VERSION = 3;
 const ASSEMBLY_SCHEMA_VERSION = 1;
 const KIT_VERSION = "0.1.5";
@@ -45,11 +58,33 @@ function capabilityFingerprint(capabilities, execution) {
     harness: capabilities.harness,
     executionMode: execution.mode,
     executionRuntime: execution.runtime,
+    features: capabilities.features || {},
     commands: Object.fromEntries(Object.entries(capabilities.commands || {})
       .filter(([name]) => execution.mode === "container" || (name !== "docker" && name !== "podman"))
       .map(([name, path]) => [name, Boolean(path)])),
   };
   return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
+}
+
+export function assertProfileCompatibility(profile, capabilities) {
+  if (profileMatchesCapabilities(profile, capabilities)) return;
+  if (profile.id === "pi-cli" && !capabilities.features?.piPersistentMentor) {
+    throw new Error("Profile pi-cli requires a Pi version with persistent RPC, explicit typed tools, --session-id, and per-course model selection support. Update Pi, then retry.");
+  }
+  throw new Error(`Profile ${profile.id} is not compatible with the detected capabilities.`);
+}
+
+export function validateSessionForStart(session, { capabilities, profiles, catalog }) {
+  const profile = profiles.find((candidate) => candidate.id === session.assembly?.profile);
+  if (!profile) throw new Error("Saved session profile is unavailable. Run learn-anything create for this topic with --migrate.");
+  assertProfileCompatibility(profile, capabilities);
+  if (session.schemaVersion !== SESSION_SCHEMA_VERSION
+    || session.assembly?.schemaVersion !== ASSEMBLY_SCHEMA_VERSION
+    || session.assembly?.kitVersion !== KIT_VERSION
+    || assemblyBlockVersionMismatch(session, catalog)) {
+    throw new Error("Saved session requires explicit migration. Run learn-anything create for this topic with --migrate.");
+  }
+  return profile;
 }
 
 function buildAssembly(profile, capabilities, catalog, execution) {
@@ -82,9 +117,10 @@ export async function constructSession({
   env = process.env,
   migrate = false,
   execution = "host",
+  capabilityProbe = probeCapabilities,
 } = {}) {
   if (!topic || !topic.trim()) throw new Error("Topic is required.");
-  const capabilities = probeCapabilities({ env });
+  const capabilities = capabilityProbe({ env });
   const selectedExecution = selectExecution(capabilities, { mode: execution });
   const nodeMajor = Number.parseInt(process.versions.node.split(".", 1)[0], 10);
   if (!capabilities.commands.node || nodeMajor < 20) throw new Error("Node.js 20 or newer is required by bundled server block.");
@@ -95,6 +131,7 @@ export async function constructSession({
     ? automaticallySelected
     : profiles.find((candidate) => candidate.id === profile);
   if (!requestedProfile) throw new Error(`Unknown profile: ${profile}`);
+  if (profile !== "auto") assertProfileCompatibility(requestedProfile, capabilities);
 
   const base = general ? join(homedir(), "learnings") : resolve(root || process.cwd(), ".learnings");
   const sourceRoot = general ? null : resolve(root || process.cwd());
@@ -111,10 +148,8 @@ export async function constructSession({
     resumed = true;
     const existingProfile = profiles.find((candidate) => candidate.id === session.assembly?.profile);
     const targetProfile = profile === "auto" && existingProfile ? existingProfile : requestedProfile;
-    const blockVersionMismatch = (session.assembly?.blocks || []).some((id) => {
-      const block = catalog.blocks.find((candidate) => candidate.id === id);
-      return !block || Number(session.assembly?.blockVersions?.[id]) !== Number(block.version || 1);
-    });
+    assertProfileCompatibility(targetProfile, capabilities);
+    const blockVersionMismatch = assemblyBlockVersionMismatch(session, catalog);
     const migrationRequired = session.schemaVersion !== SESSION_SCHEMA_VERSION
       || session.assembly?.schemaVersion !== ASSEMBLY_SCHEMA_VERSION
       || session.assembly?.kitVersion !== KIT_VERSION
@@ -126,7 +161,7 @@ export async function constructSession({
     }
     if (migrationRequired) {
       const previousVersion = Number(session.schemaVersion || 1);
-      await writeFile(`${sessionPath}.v${previousVersion}.backup`, `${JSON.stringify(session, null, 2)}\n`, { flag: "wx" });
+      await writeMigrationBackup(sessionPath, previousVersion, session);
       if (!session.canvas) session.canvas = canvasFromStage(session.stage, session.topic);
       delete session.stage;
       session.schemaVersion = SESSION_SCHEMA_VERSION;
@@ -151,7 +186,9 @@ export async function constructSession({
       sourceRoot,
       createdAt: now,
       updatedAt: now,
-      agentSessionId: null,
+      agentSessionId: requestedProfile.id === "pi-cli" ? randomUUID() : null,
+      mentorSessionInitialized: false,
+      mentorModel: null,
       security: { accessToken: randomBytes(32).toString("base64url") },
       transcript: [],
       canvas: createInitialCanvas(topic.trim()),
@@ -163,10 +200,25 @@ export async function constructSession({
     await writeFile(join(sessionDir, "notes.md"), `# ${topic.trim()} — notes\n\n`, { flag: "wx" });
   }
 
+  let sessionChanged = false;
+  if (session.assembly?.profile === "pi-cli" && !session.agentSessionId) {
+    session.agentSessionId = randomUUID();
+    session.mentorSessionInitialized = false;
+    sessionChanged = true;
+  }
+  if (session.mentorSessionInitialized === undefined) {
+    session.mentorSessionInitialized = false;
+    sessionChanged = true;
+  }
+  if (session.mentorModel === undefined) {
+    session.mentorModel = null;
+    sessionChanged = true;
+  }
   if (!session.security?.accessToken) {
     session.security = { ...(session.security || {}), accessToken: randomBytes(32).toString("base64url") };
-    await atomicJson(sessionPath, session);
+    sessionChanged = true;
   }
+  if (sessionChanged) await atomicJson(sessionPath, session);
 
   return {
     resumed,

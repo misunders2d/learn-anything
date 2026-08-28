@@ -198,9 +198,11 @@ if (!token) throw new Error("Session has no access token.");
 const firstMessage = option(args, "--message") || "I am completely new to Rust. Start from the beginning, explain the first idea in plain language, then prepare one tiny guided example.";
 const allowChat = args.includes("--allow-chat");
 const currentWork = args.includes("--current-work");
+const mentorTurnOnly = args.includes("--mentor-turn-only");
 const interruptWith = option(args, "--interrupt-with");
 const expectedInterruptText = option(args, "--expect");
 const workQuestion = option(args, "--work-question");
+const unanchoredWorkQuestion = args.includes("--unanchored-work-question");
 const screenshotPath = option(args, "--screenshot");
 const profile = await mkdtemp(join(tmpdir(), "learn-anything-live-browser-"));
 const browser = new ChromeHarness(await browserBinary(), profile, `${url}/#token=${token}`);
@@ -274,13 +276,15 @@ try {
       const rect = element.getBoundingClientRect();
       return { top: rect.top, bottom: rect.bottom, viewport: innerHeight };
     })()`);
-    if (firstInteraction) {
+    if (firstInteraction && !mentorTurnOnly) {
       assert.ok(firstInteraction.top >= 0 && firstInteraction.bottom <= firstInteraction.viewport, "first required interaction must be visible without scrolling");
       checks.push("first-required-interaction-visible-without-scrolling");
     }
     if (workQuestion) {
-      await browser.click("document.querySelector('.code-fallback')?.closest('.stage-component')?.querySelector('.ask-component') || document.querySelector('.stage-component .ask-component')");
-      await waitFor(() => browser.evaluate("document.querySelector('.work-question-bar').innerText.includes('About ')"), "selected work component context", 10_000);
+      if (!unanchoredWorkQuestion) {
+        await browser.click("document.querySelector('.code-fallback')?.closest('.stage-component')?.querySelector('.ask-component') || document.querySelector('.stage-component .ask-component')");
+        await waitFor(() => browser.evaluate("document.querySelector('.work-question-bar').innerText.includes('About ')"), "selected work component context", 10_000);
+      }
       await browser.setComposer(workQuestion, ".work-question-input");
       await browser.click("document.querySelector('.work-question-bar button[type=submit]')");
       await waitFor(async () => {
@@ -289,9 +293,10 @@ try {
       }, "work-surface question in transcript", 10_000);
       await waitFor(async () => {
         const current = await browser.evaluate(browserState());
-        return current.focus === "work" && !current.status && current.lastMessageRole === "mentor" && current.anchoredReplyText;
+        if (current.status || current.lastMessageRole !== "mentor") return false;
+        return unanchoredWorkQuestion ? current.focus === "chat" : current.focus === "work" && current.anchoredReplyText;
       }, "mentor response to work-surface question", 180_000);
-      checks.push("clicked-work-question-and-received-reply");
+      checks.push(unanchoredWorkQuestion ? "broad-work-question-opens-chat" : "clicked-work-question-and-received-reply");
       state = await browser.evaluate(browserState());
     }
     if (state.focus === "work" && state.editorVisible && state.runVisible) {
