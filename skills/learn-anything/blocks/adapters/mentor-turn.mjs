@@ -1,5 +1,6 @@
+import { ACTION_TYPES, concreteAction } from "../continuation.mjs";
+
 const DEFAULT_CHAT_QUESTION = "What would you like to explore next?";
-const DEFAULT_WORK_ACTION = "Complete the next unfinished step in the visible activity using the mentor's guidance.";
 const A2UI_VERSION = "v0.9";
 
 function text(value, max = 20_000) {
@@ -12,7 +13,7 @@ function question(value) {
 }
 
 function action(value, saved) {
-  return text(value, 1_000) || text(saved, 1_000) || DEFAULT_WORK_ACTION;
+  return concreteAction(value, { fallback: saved, max: 280 });
 }
 
 function surfaceOperation(operation, index) {
@@ -122,6 +123,30 @@ export function reconcileMentorTurn(item, candidate, session, { runId } = {}) {
   const focus = presentation === "chat" ? "chat" : "work";
   const requestedKind = candidate?.continuation?.kind;
   const requestedText = candidate?.continuation?.text;
+  const requestedActionType = candidate?.continuation?.action_type;
+  const context = targetContext(item, candidate);
+  const currentSurface = session?.canvas?.activeSurfaceId ? session.canvas.surfaces?.[session.canvas.activeSurfaceId] : null;
+  const taskTitle = presentation === "activity"
+    ? text(candidate?.task_title, 120)
+    : presentation === "inline"
+      ? text(currentSurface?.dataModel?.title, 120)
+      : "";
+  if (focus === "work" && !taskTitle) {
+    throw new Error("Work mentor turn requires one localized task_title shared by the title, artifact, and action.");
+  }
+  if (focus === "work" && !context?.componentId) {
+    throw new Error("Work mentor turn requires one target_component_id for the visible current task.");
+  }
+  const actionType = focus === "work"
+    ? (ACTION_TYPES.includes(requestedActionType)
+      ? requestedActionType
+      : presentation === "inline" && ACTION_TYPES.includes(session?.continuation?.actionType)
+        ? session.continuation.actionType
+        : "")
+    : "";
+  if (focus === "work" && !actionType) {
+    throw new Error(`Work mentor turn requires continuation.action_type: ${ACTION_TYPES.join(", ")}.`);
+  }
   const continuation = focus === "chat"
     ? { kind: "question", text: question(requestedKind === "question" ? requestedText : "") }
     : {
@@ -130,6 +155,9 @@ export function reconcileMentorTurn(item, candidate, session, { runId } = {}) {
           requestedKind === "action" ? requestedText : "",
           presentation === "inline" && session?.continuation?.kind === "action" ? session.continuation.text : "",
         ),
+        taskTitle,
+        targetComponentId: context.componentId,
+        actionType,
       };
 
   return {
@@ -138,9 +166,10 @@ export function reconcileMentorTurn(item, candidate, session, { runId } = {}) {
     runId: runId || null,
     message,
     presentation,
+    ...(taskTitle ? { taskTitle } : {}),
     focus,
     messages,
     continuation,
-    context: targetContext(item, candidate),
+    context,
   };
 }

@@ -123,7 +123,7 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
       ],
     };
     const canvasPayload = canvasEventValue(canvasFromStage(stage, stage.title));
-    canvasPayload.continuation = { kind: "action", text: "Complete the smoke activity." };
+    canvasPayload.continuation = { kind: "action", text: "Choose Yes in the Ready? quiz.", taskTitle: "Smoke stage", targetComponentId: "smoke-quiz", actionType: "answer" };
     await jsonFetch(`${address.url}/api/a2ui`, { method: "POST", body: JSON.stringify(canvasPayload) }, mentorAuth);
 
     await jsonFetch(`${address.url}/api/action`, {

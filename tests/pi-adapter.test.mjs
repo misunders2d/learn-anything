@@ -6,6 +6,7 @@ import process from "node:process";
 import test from "node:test";
 import { candidateFromPiTurn, mentorEventPrompt, mentorSystemPrompt } from "../skills/learn-anything/blocks/adapters/pi-cli/adapter.mjs";
 import { composeSurfacePlan, plainTextMentorCandidate, reconcileMentorTurn } from "../skills/learn-anything/blocks/adapters/mentor-turn.mjs";
+import { actionRepeatsVisibleState } from "../skills/learn-anything/blocks/continuation.mjs";
 import { collectPiRpcTurn, PiRpcClient, piRpcArgs } from "../skills/learn-anything/blocks/adapters/pi-cli/rpc-client.mjs";
 import { parsePiModelList } from "../skills/learn-anything/blocks/adapters/pi-cli/models.mjs";
 
@@ -154,6 +155,65 @@ test("broad work-composer questions can move to chat and missing punctuation is 
   assert.equal(result.baseRevision, 7);
 });
 
+test("visible code cannot be assigned as a copy-paste step after the host already placed it", () => {
+  const canvas = {
+    activeSurfaceId: "lesson",
+    surfaces: { lesson: { components: { code: { id: "code", component: "Code", value: "print('ok')" } } } },
+  };
+  assert.equal(actionRepeatsVisibleState("Скопируй этот код в блок code и нажми Run.", canvas, "code"), true);
+  assert.equal(actionRepeatsVisibleState("Нажми Run и проверь строку ok.", canvas, "code"), false);
+
+  canvas.surfaces.lesson.components.practice = { id: "practice", component: "Code", value: "" };
+  assert.equal(actionRepeatsVisibleState("Copy this code into the practice editor.", canvas, "practice"), false);
+  assert.equal(actionRepeatsVisibleState("Copy this code into the worked example.", canvas, "code"), true);
+});
+
+test("work turns reject generic fallback instructions and require one concrete localized action", () => {
+  const item = {
+    type: "execution_result",
+    language: "python",
+    componentId: "code",
+    mentorTurn: { id: "turn-action", baseRevision: 2 },
+  };
+  const session = { canvas: { activeSurfaceId: "lesson" }, continuation: null };
+  assert.throws(() => reconcileMentorTurn(item, {
+    message: "Вывод верный.",
+    presentation: "activity",
+    task_title: "Проверка вывода",
+    continuation: { kind: "action", text: "Complete the next unfinished step in the visible activity using the mentor's guidance.", action_type: "inspect" },
+  }, session), /one concrete visible action/i);
+  assert.throws(() => reconcileMentorTurn(item, {
+    message: "Вывод верный.",
+    presentation: "activity",
+    task_title: "Проверка вывода",
+    continuation: { kind: "none", text: "", action_type: "inspect" },
+  }, session), /one concrete visible action/i);
+
+  assert.throws(() => reconcileMentorTurn(item, {
+    message: "Вывод верный.",
+    presentation: "activity",
+    continuation: { kind: "action", text: "Нажми Run и проверь строку Сумма: 5." },
+  }, session), /localized task_title/i);
+
+  const result = reconcileMentorTurn(item, {
+    message: "Вывод верный.",
+    presentation: "activity",
+    task_title: "Повтор функции два раза",
+    continuation: { kind: "action", text: "Замени 3 на 2 в repeat, затем запусти код и проверь две строки «Сумма: 5».", action_type: "edit" },
+    target_component_id: "code",
+  }, session);
+  assert.equal(result.focus, "work");
+  assert.equal(result.taskTitle, "Повтор функции два раза");
+  assert.equal(result.context.componentId, "code");
+  assert.deepEqual(result.continuation, {
+    kind: "action",
+    text: "Замени 3 на 2 в repeat, затем запусти код и проверь две строки «Сумма: 5».",
+    taskTitle: "Повтор функции два раза",
+    targetComponentId: "code",
+    actionType: "edit",
+  });
+});
+
 test("only explicitly anchored work questions force inline presentation", () => {
   const item = {
     type: "user_message",
@@ -166,13 +226,22 @@ test("only explicitly anchored work questions force inline presentation", () => 
     continuation: { kind: "question", text: "Does that make sense" },
     surface_plan: { operations: [{ kind: "delete_surface", surface_id: "lesson" }] },
   }, {
-    canvas: { activeSurfaceId: "lesson" },
-    continuation: { kind: "action", text: "Change the wrapped function, then run it." },
+    canvas: {
+      activeSurfaceId: "lesson",
+      surfaces: { lesson: { dataModel: { title: "Wrapped function" }, components: { code: { id: "code", component: "Code" } } } },
+    },
+    continuation: { kind: "action", text: "Change the wrapped function, then run it.", taskTitle: "Wrapped function", targetComponentId: "code", actionType: "edit" },
   });
   assert.equal(result.presentation, "inline");
   assert.equal(result.focus, "work");
   assert.deepEqual(result.messages, []);
-  assert.deepEqual(result.continuation, { kind: "action", text: "Change the wrapped function, then run it." });
+  assert.deepEqual(result.continuation, {
+    kind: "action",
+    text: "Change the wrapped function, then run it.",
+    taskTitle: "Wrapped function",
+    targetComponentId: "code",
+    actionType: "edit",
+  });
   assert.equal(result.context.componentId, "code");
 });
 

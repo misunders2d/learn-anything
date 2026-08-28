@@ -5,6 +5,7 @@ import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mentorItemIsSuperseded } from "../adapters/codex-cli/turn-order.mjs";
 import { loadPiModelCatalog } from "../adapters/pi-cli/models.mjs";
+import { ACTION_TYPES, actionMatchesType, actionRepeatsVisibleState, actionSupportsComponent, isGenericAction } from "../continuation.mjs";
 import { assemblyBlockVersionMismatch, loadBlockCatalog } from "../adapters/runtime.mjs";
 import { runSelectedCode, selectedRunners } from "../execution/runner.mjs";
 import {
@@ -194,6 +195,24 @@ export async function createLearnAnythingServer({
     throw new Error("Session requires explicit migration. Run learn-anything create for this topic with --migrate.");
   }
   let sessionChanged = false;
+  const savedActivitySurface = session.canvas?.activeSurfaceId ? session.canvas.surfaces?.[session.canvas.activeSurfaceId] : null;
+  const savedActivityTarget = savedActivitySurface?.components?.[session.continuation?.targetComponentId];
+  const activityNeedsRepair = session.canvas?.focus === "work"
+    && (session.activityContractVersion !== 1
+      || session.continuation?.kind !== "action"
+      || !session.continuation?.taskTitle
+      || !session.continuation?.targetComponentId
+      || !ACTION_TYPES.includes(session.continuation?.actionType)
+      || !savedActivityTarget
+      || ["Column", "Row"].includes(savedActivityTarget?.component)
+      || !actionMatchesType(session.continuation?.text, session.continuation?.actionType)
+      || !actionSupportsComponent(session.continuation?.actionType, savedActivityTarget?.component)
+      || isGenericAction(session.continuation?.text)
+      || actionRepeatsVisibleState(session.continuation?.text, session.canvas, session.continuation?.targetComponentId));
+  if (activityNeedsRepair) {
+    session.continuation = null;
+    sessionChanged = true;
+  }
   if (session.assembly?.profile === "pi-cli" && !session.agentSessionId) {
     session.agentSessionId = randomUUID();
     session.mentorSessionInitialized = false;
@@ -369,6 +388,16 @@ export async function createLearnAnythingServer({
     else mentorQueue.push(queuedItem);
   }
 
+  if (activityNeedsRepair) {
+    enqueueMentor({
+      type: "stage_action",
+      action: "repair_activity_focus",
+      instruction: "The saved activity predates the coherent-focus contract. Preserve completed work and return one localized task_title plus one concrete next action whose instruction, artifact, target, and expected evidence all describe that same task.",
+      canvasContext: session.canvas,
+    });
+    mentorState = "waiting";
+  }
+
   function nextMentorMessage(mentorId, timeoutMs = 55_000) {
     if (mentorQueue.length) return Promise.resolve(mentorQueue.shift());
     return new Promise((resolvePromise) => {
@@ -431,12 +460,18 @@ export async function createLearnAnythingServer({
     } else if (event.type === "CUSTOM" && event.name === "a2ui") {
       const payload = plainCanvasPayload(event.value);
       enforceAutomaticActivityFocus(payload);
+      const candidateCanvas = validatedCanvasForPayload(payload);
       if (activeMentorTurnIsAnchoredWork()) return preserveInlineWorkContinuation(payload);
-      session.canvas = payload.messages.length
-        ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
-        : { ...session.canvas, focus: payload.focus };
+      session.canvas = candidateCanvas;
       session.continuation = payload.continuation;
+      if (payload.focus === "work") session.activityContractVersion = 1;
       await persist();
+      const normalizedEvent = agEvent("CUSTOM", {
+        name: "a2ui",
+        value: { ...canvasEventValue(session.canvas), continuation: session.continuation },
+      });
+      broadcast(normalizedEvent);
+      return { accepted: true };
     } else if (event.type === "CUSTOM" && event.name === "mentor_session" && event.value?.sessionId) {
       session.agentSessionId = event.value.sessionId;
       await persist({ bumpRevision: false });
@@ -461,10 +496,50 @@ export async function createLearnAnythingServer({
     if (continuation.kind === "question" && (!text.includes("?") || !normalized || genericContinuation.test(normalized))) {
       throw httpError("Chat continuation must contain a meaningful direct question.", 400);
     }
-    if (continuation.kind === "action" && (!normalized || genericContinuation.test(normalized))) {
-      throw httpError("Work continuation must name a meaningful concrete action.", 400);
+    if (continuation.kind === "action" && isGenericAction(text)) {
+      throw httpError("Work continuation must name one concrete visible action and its target or expected evidence.", 400);
+    }
+    if (value.focus === "work") {
+      const taskTitle = typeof continuation.taskTitle === "string" ? continuation.taskTitle.trim().slice(0, 120) : "";
+      const targetComponentId = typeof continuation.targetComponentId === "string" ? continuation.targetComponentId.trim().slice(0, 200) : "";
+      const actionType = typeof continuation.actionType === "string" ? continuation.actionType.trim() : "";
+      if (!taskTitle) throw httpError("Work continuation requires one localized taskTitle.", 400);
+      if (!targetComponentId) throw httpError("Work continuation requires one targetComponentId.", 400);
+      if (!ACTION_TYPES.includes(actionType)) throw httpError(`Work continuation actionType must be one of: ${ACTION_TYPES.join(", ")}.`, 400);
+      if (!actionMatchesType(text, actionType)) throw httpError("Work continuation text must contain a concrete verb matching actionType.", 400);
+      return { focus: value.focus, messages: value.messages, continuation: { kind: continuation.kind, text, taskTitle, targetComponentId, actionType } };
     }
     return { focus: value.focus, messages: value.messages, continuation: { kind: continuation.kind, text } };
+  }
+
+  function validatedCanvasForPayload(payload) {
+    let candidateCanvas = payload.messages.length
+      ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
+      : { ...structuredClone(session.canvas), focus: payload.focus };
+    if (payload.focus !== "work") return candidateCanvas;
+    const surfaceId = candidateCanvas.activeSurfaceId;
+    const surface = surfaceId ? candidateCanvas.surfaces?.[surfaceId] : null;
+    if (!surface) throw httpError("Work focus requires a visible canvas.", 400);
+    const targetComponent = surface.components?.[payload.continuation.targetComponentId];
+    if (!targetComponent || ["Column", "Row"].includes(targetComponent.component)) {
+      throw httpError("Work continuation targetComponentId must name one non-layout component on the active surface.", 400);
+    }
+    if (!actionSupportsComponent(payload.continuation.actionType, targetComponent.component)) {
+      throw httpError(`Work continuation actionType ${payload.continuation.actionType} is incompatible with target component ${targetComponent.component}.`, 400);
+    }
+    if (actionRepeatsVisibleState(payload.continuation.text, candidateCanvas, payload.continuation.targetComponentId)) {
+      throw httpError("Work continuation asks the learner to populate code that is already visible. Name the next action on the existing artifact.", 400);
+    }
+    return {
+      ...candidateCanvas,
+      surfaces: {
+        ...candidateCanvas.surfaces,
+        [surfaceId]: {
+          ...surface,
+          dataModel: { ...(surface.dataModel || {}), title: payload.continuation.taskTitle },
+        },
+      },
+    };
   }
 
   function activeMentorTurnIsAnchoredWork() {
@@ -490,7 +565,12 @@ export async function createLearnAnythingServer({
 
   async function preserveInlineWorkContinuation(payload) {
     assertInlineWorkContinuation(payload);
+    const surface = session.canvas?.surfaces?.[session.canvas?.activeSurfaceId];
+    if (surface?.dataModel?.title !== payload.continuation.taskTitle) {
+      throw httpError("Anchored work clarification must preserve the current task title.", 400);
+    }
     session.continuation = payload.continuation;
+    session.activityContractVersion = 1;
     await persist();
     broadcast(agEvent("CUSTOM", {
       name: "a2ui",
@@ -545,10 +625,7 @@ export async function createLearnAnythingServer({
     if (automatic && payload.focus !== "work") {
       throw httpError("Automatic activity feedback must preserve work focus.", 400);
     }
-    const candidateCanvas = payload.messages.length
-      ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
-      : { ...session.canvas, focus: payload.focus };
-    if (payload.focus === "work" && !candidateCanvas.activeSurfaceId) throw httpError("Work focus requires a visible canvas.", 400);
+    const candidateCanvas = validatedCanvasForPayload(payload);
 
     const context = cleanMentorContext(value.context);
     const assistantMessage = {
@@ -563,6 +640,7 @@ export async function createLearnAnythingServer({
     candidate.transcript.push(assistantMessage);
     candidate.canvas = candidateCanvas;
     candidate.continuation = payload.continuation;
+    if (payload.focus === "work") candidate.activityContractVersion = 1;
     candidate.mentorSessionInitialized = candidate.mentorSessionInitialized || value.initializeSession === true;
     candidate.mentorRevision = (candidate.mentorRevision || 0) + 1;
     candidate.mentorCommittedTurnIds = [...(candidate.mentorCommittedTurnIds || []), turnId].slice(-100);
@@ -824,9 +902,7 @@ export async function createLearnAnythingServer({
         requireActiveMentor(request);
         const payload = plainCanvasPayload(await readBody(request));
         enforceAutomaticActivityFocus(payload);
-        const candidateCanvas = payload.messages.length
-          ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
-          : { ...session.canvas, focus: payload.focus };
+        const candidateCanvas = validatedCanvasForPayload(payload);
         if (url.searchParams.get("validate") === "1") {
           sendJson(response, 200, { valid: true, surfaceId: candidateCanvas.activeSurfaceId || null });
           return;
@@ -837,15 +913,11 @@ export async function createLearnAnythingServer({
         }
         session.canvas = candidateCanvas;
         session.continuation = payload.continuation;
+        if (payload.focus === "work") session.activityContractVersion = 1;
         await persist();
         broadcast(agEvent("CUSTOM", {
           name: "a2ui",
-          value: {
-            focus: session.canvas.focus,
-            activeSurfaceId: session.canvas.activeSurfaceId,
-            messages: hydratedMessages(session.canvas, payload.messages),
-            continuation: session.continuation,
-          },
+          value: { ...canvasEventValue(session.canvas), continuation: session.continuation },
         }));
         setMentorState("idle");
         sendJson(response, 202, { accepted: true, surfaceId: session.canvas.activeSurfaceId || null });
@@ -868,6 +940,7 @@ export async function createLearnAnythingServer({
             componentId: component.id,
             code: component.value,
             result,
+            canvasContext: session.canvas,
             createdAt: new Date().toISOString(),
           };
           setMentorState("waiting");

@@ -24,6 +24,8 @@ class MentorHttpError extends Error {
   }
 }
 
+class MentorCandidateError extends Error {}
+
 async function requestJson(url, path, token, options = {}) {
   const response = await fetch(`${url}${path}`, {
     ...options,
@@ -53,7 +55,11 @@ Finish every turn by calling complete_mentor_turn exactly once. Never print JSON
 - presentation "chat": broad question or a genuine question requiring the learner's answer.
 - presentation "inline": only an explicitly anchored question about one visible component. Do not replace its canvas.
 - presentation "activity": submitted work, observed activity feedback, or a new/updated visible exercise.
-- continuation.kind: question for chat, action for activity/inline, or none when host should derive it. Punctuation is optional.
+- task_title: required for activity; a short localized title naming the same current task as the instruction, artifact, action, and target. Omit it for chat/inline.
+- continuation.kind: question for chat and action for activity/inline. Punctuation is optional.
+- continuation.action_type: required for activity/inline; choose run, edit, answer, adjust, read, inspect, or submit so it matches both the main verb in continuation.text and the target component. Omit it for chat.
+- continuation.text: one short sentence in the learner's language. For activity/inline, name exactly what to do now, the visible target, and expected evidence when useful. Never say only continue, next, complete the activity, or follow the mentor's guidance. If surface_plan already puts code or content into the target, do not tell the learner to copy, paste, insert, or type that same artifact; ask for the next real interaction with it.
+- Keep one active task. Put its brief instruction immediately before its target component; supporting explanation and feedback follow it.
 - surface_plan: omit when canvas stays unchanged. To change it, provide structured operations; never provide JSONL strings.
 
 Surface operation kinds map to A2UI v0.9:
@@ -76,7 +82,7 @@ export function mentorEventPrompt(item, history = []) {
         ? `Question submitted from the work composer. Composer origin does not determine presentation; use chat for a broad question and activity only when visible work should change.\nQuestion: ${item.message.content}\nCurrent canvas: ${JSON.stringify(item.canvasContext, null, 2)}`
         : item.message.content;
   } else if (item.type === "execution_result") {
-    learnerInput = `Learner explicitly submitted this ${item.language || "code"} work for feedback:\n${item.code || "(code unavailable)"}\n\nLatest execution result:\n${JSON.stringify(item.result, null, 2)}`;
+    learnerInput = `Learner explicitly submitted this ${item.language || "code"} work for feedback:\n${item.code || "(code unavailable)"}\n\nLatest execution result:\n${JSON.stringify(item.result, null, 2)}\n\nCurrent canvas:\n${JSON.stringify(item.canvasContext || null, null, 2)}`;
   } else {
     learnerInput = `Browser activity event:\n${JSON.stringify(item, null, 2)}`;
   }
@@ -117,11 +123,16 @@ async function preflightPi(options) {
 }
 
 async function commitTurn({ url, token, mentorId, item, before, candidate, runId, initializeSession }) {
-  const payload = {
-    ...reconcileMentorTurn(item, candidate, before, { runId }),
+  let reconciled;
+  try {
+    reconciled = reconcileMentorTurn(item, candidate, before, { runId });
+  } catch (error) {
+    throw new MentorCandidateError(error.message, { cause: error });
+  }
+  return mentorPost(url, "/api/mentor/turn", token, mentorId, {
+    ...reconciled,
     initializeSession,
-  };
-  return mentorPost(url, "/api/mentor/turn", token, mentorId, payload);
+  });
 }
 
 async function main() {
@@ -193,8 +204,10 @@ async function main() {
           initializeSession: !before.mentorSessionInitialized,
         });
       } catch (error) {
-        if (!(error instanceof MentorHttpError) || error.status !== 400) throw error;
-        turn = await rpc.prompt(`Your structured browser candidate was rejected before publication: ${error.body?.error || error.message}\nCorrect the candidate. Preserve the useful learner answer. Call complete_mentor_turn exactly once.`);
+        const rejectedLocally = error instanceof MentorCandidateError;
+        const rejectedByHost = error instanceof MentorHttpError && error.status === 400;
+        if (!rejectedLocally && !rejectedByHost) throw error;
+        turn = await rpc.prompt(`Your structured browser candidate was rejected before publication: ${error.body?.error || error.message}\nCorrect the candidate. Preserve the useful learner answer. Return one concrete localized next action for work. Call complete_mentor_turn exactly once.`);
         candidate = candidateFromPiTurn(turn);
         const current = await requestJson(url, "/api/session", token);
         await commitTurn({

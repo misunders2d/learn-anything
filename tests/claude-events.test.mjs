@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createClaudeEventState, fallbackCanvasForClaudeItem, mapClaudeMessage } from "../skills/learn-anything/blocks/adapters/claude-agent-sdk/events.mjs";
+import { createClaudeEventState, mapClaudeMessage, missingStructuredContinuationError } from "../skills/learn-anything/blocks/adapters/claude-agent-sdk/events.mjs";
 
-test("Claude inline work fallback preserves work and publishes a concrete action", () => {
-  const payload = fallbackCanvasForClaudeItem({ type: "user_message", message: { source: "work" } });
-  assert.equal(payload.focus, "work");
-  assert.deepEqual(payload.messages, []);
-  assert.equal(payload.continuation.kind, "action");
-  assert.match(payload.continuation.text, /unfinished step/i);
+test("Claude missing structured continuation stays operational instead of publishing vague learner guidance", () => {
+  const error = missingStructuredContinuationError();
+  assert.equal(error.type, "RUN_ERROR");
+  assert.equal(error.code, "MISSING_STRUCTURED_CONTINUATION");
+  assert.match(error.message, /concrete learner continuation/i);
 });
 
 test("Claude partial text maps to AG-UI text lifecycle", () => {

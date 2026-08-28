@@ -219,10 +219,19 @@ function WorkspaceStatus({ connected, mentorAttached, degraded, hasRunnableCode 
   );
 }
 
-function ContinuationBanner({ continuation }) {
+function usesCyrillic(value) {
+  return /\p{Script=Cyrillic}/u.test(value || "");
+}
+
+function continuationLabel(continuation) {
+  if (continuation?.kind === "question") return usesCyrillic(continuation?.text) ? "Ваш ход" : "Your turn";
+  return usesCyrillic(continuation?.text) ? "Сделай сейчас" : "Do this now";
+}
+
+function ContinuationBanner({ continuation, active = false }) {
   if (!continuation?.text) return null;
-  return <section className={`course-continuation is-${continuation.kind || "action"}`}>
-    <div className="anchored-note-label">{continuation.kind === "question" ? "Your turn" : "Next step"}</div>
+  return <section aria-label={continuationLabel(continuation)} className={`course-continuation is-${continuation.kind || "action"}${active ? " is-current-step" : ""}`}>
+    <div className="anchored-note-label">{continuationLabel(continuation)}</div>
     <Markdown content={continuation.text} />
   </section>;
 }
@@ -580,30 +589,34 @@ function bindComponent(component, dataModel) {
   return Object.fromEntries(Object.entries(component).map(([key, value]) => [key, resolveDataBinding(value, dataModel)]));
 }
 
-function A2uiNode({ componentId, surface, onContext, onParameterChange, onSubmitToMentor, replyFor }) {
+function A2uiNode({ componentId, surface, onContext, onParameterChange, onSubmitToMentor, replyFor, currentTargetId, activeContinuation }) {
   const source = surface?.components?.[componentId];
   if (!source) return <section className="activity-error">Canvas component “{componentId}” is missing.</section>;
   const component = bindComponent(source, surface.dataModel || {});
   if (component.component === "Column" || component.component === "Row") {
     const children = Array.isArray(component.children) ? component.children : [];
-    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} replyFor={replyFor} />)}</div>;
+    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} replyFor={replyFor} currentTargetId={currentTargetId} activeContinuation={activeContinuation} />)}</div>;
   }
   const normalized = { ...component, _surfaceId: surface.id, type: String(component.component || "unknown").toLowerCase() };
   const label = component.title || component.question || String(component.component || "component").toLowerCase();
   const reply = replyFor(component.id);
-  return (
-    <div data-component-id={component.id || ""} className="stage-component">
+  const current = component.id === currentTargetId;
+  const askable = !["Markdown", "Callout"].includes(component.component);
+  const russian = usesCyrillic(activeContinuation?.text || reply?.content);
+  return <>
+    {current && <ContinuationBanner continuation={activeContinuation} active />}
+    <div data-component-id={component.id || ""} className={`stage-component${current ? " is-current-target" : ""}`}>
       <ErrorBoundary>
         <StageComponent component={normalized} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} />
       </ErrorBoundary>
-      <button type="button" onClick={() => onContext({ componentId: component.id, label })} className="ask-component">Ask about this</button>
+      {askable && <button type="button" onClick={() => onContext({ componentId: component.id, label })} className="ask-component">{russian ? "Спросить об этом" : "Ask about this"}</button>}
       {reply && <aside className="anchored-mentor-note">
-        <div className="anchored-note-label">Mentor on this part</div>
+        <div className="anchored-note-label">{russian ? "Комментарий ментора" : "Mentor on this part"}</div>
         {reply.context?.quote && <blockquote>{reply.context.quote}</blockquote>}
         <Markdown content={reply.content} />
       </aside>}
     </div>
-  );
+  </>;
 }
 
 function applyCanvasPayload(current, payload) {
@@ -683,6 +696,8 @@ function App() {
   const taskKey = workTaskKey(canvas);
   const taskInstructionId = firstLearnerComponentId(canvas);
   const latestMentorMessage = [...messages].reverse().find((message) => message?.role === "assistant") || null;
+  const requestedTargetId = continuation?.kind === "action" ? continuation.targetComponentId : null;
+  const currentTargetId = requestedTargetId && surface?.components?.[requestedTargetId] ? requestedTargetId : "";
   const workMentorLead = latestMentorMessage
     && !latestMentorMessage.context?.componentId
     && latestMentorMessage.id !== workExchange?.answer?.id
@@ -1085,24 +1100,24 @@ function App() {
         </header>
         <div ref={stageScrollRef} className="stage-scroll scroll-region" tabIndex="-1" aria-labelledby="stage-title">
           <div className="stage-column">
-            {workMentorLead && <section className="work-mentor-lead">
-              <div className="anchored-note-label">Mentor</div>
-              <Markdown content={workMentorLead.content} />
-            </section>}
+            {continuation?.kind === "action" && !currentTargetId && <ContinuationBanner continuation={continuation} active />}
             {surface?.components?.root
-              ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} onParameterChange={updateParameter} onSubmitToMentor={submitCode} replyFor={replyFor} />
+              ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} onParameterChange={updateParameter} onSubmitToMentor={submitCode} replyFor={replyFor} currentTargetId={currentTargetId} activeContinuation={continuation?.kind === "action" ? continuation : null} />
               : <section className="activity-error" role="status">Lesson content is unavailable. Use Ask mentor to restore this activity.</section>}
+            {workMentorLead && <details className="work-history-note">
+              <summary>{usesCyrillic(workMentorLead.content) ? "Контекст ментора" : "Mentor context"}</summary>
+              <Markdown content={workMentorLead.content} />
+            </details>}
             {workExchange && !workExchange.answer?.context?.componentId && <section className="work-mentor-reply">
-              <div className="anchored-note-label">Your question</div>
+              <div className="anchored-note-label">{usesCyrillic(workExchange.question.content) ? "Ваш вопрос" : "Your question"}</div>
               <Markdown content={workExchange.question.content} />
-              <div className="anchored-note-label">Mentor</div>
+              <div className="anchored-note-label">{usesCyrillic(workExchange.question.content) ? "Ментор" : "Mentor"}</div>
               {workExchange.answer ? <Markdown content={workExchange.answer.content} /> : <p>{mentorState === "responding" ? "Responding…" : "Waiting…"}</p>}
             </section>}
           </div>
         </div>
         <form aria-label="Ask mentor from work" onSubmit={(event) => { event.preventDefault(); void sendMessage("work"); }} className="work-question-bar">
           <div className="work-question-inner">
-            <ContinuationBanner continuation={continuation?.kind === "action" ? continuation : null} />
             <div className="mentor-presence" aria-live="polite">
               {mentorState === "waiting" && <><span className="thinking-dot" />Thinking about this… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}
               {mentorState === "responding" && <><span className="thinking-dot" />Adding guidance… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}

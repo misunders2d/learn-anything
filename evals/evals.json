@@ -258,6 +258,22 @@
         "Transcript, focus, canvas, continuation, and completion commit together; malformed canvas data leaves the last good state unchanged.",
         "Provider and protocol failures remain durable operational diagnostics and never appear as fake mentor teaching messages."
       ]
+    },
+    {
+      "id": 23,
+      "prompt": "In my Russian Python decorators activity, the code and output are followed by several mentor notes and repeated Ask controls. At the bottom, a card says ‘Complete the next unfinished step in the visible activity using the mentor's guidance.’ I cannot tell what to do or where the lesson focus is.",
+      "expected_output": "The workspace presents one localized concrete active action immediately before one visually marked target; supporting context no longer competes or appears to be the next task.",
+      "files": [],
+      "expectations": [
+        "Generic work continuation copy is rejected before publication; Pi receives one structured correction retry, while non-structured adapters fail operationally instead of inventing guidance.",
+        "Pi, Claude, Codex, and manual A2UI work ingresses all require the same taskTitle, targetComponentId, and actionType contract, persist it, and survive restart without repair loops.",
+        "The action is one short sentence in the learner's language naming what to do now and the visible target or expected evidence.",
+        "The localized task title, instruction, artifact, action, target, and structured actionType all describe the same current task and commit atomically; action text and target component must both be compatible with actionType.",
+        "The active action remains visible while scrolling, sits directly before the target, and visually marks that one target. There is no stale header from the previous task.",
+        "Supporting Markdown and callouts do not each render a competing Ask about this control.",
+        "Older unanchored mentor context is secondary or collapsed, while the current target and action remain primary.",
+        "The existing transcript, code, output, canvas, model, and mentor session survive the correction."
+      ]
     }
   ]
 }

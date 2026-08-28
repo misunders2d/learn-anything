@@ -5,7 +5,7 @@ Post a flow focus plus A2UI v0.9 messages:
 ```json
 {
   "focus": "work",
-  "continuation": { "kind": "action", "text": "Change quantity to 3, then run the code." },
+  "continuation": { "kind": "action", "text": "Change quantity to 3, then run the code.", "taskTitle": "See quantity change the result", "targetComponentId": "editor", "actionType": "edit" },
   "messages": [
     {
       "version": "v0.9",
@@ -36,7 +36,7 @@ Post a flow focus plus A2UI v0.9 messages:
 }
 ```
 
-`continuation` is required on every canvas update. Use `{ "kind": "question", "text": "...?" }` with chat and `{ "kind": "action", "text": "..." }` with work. The browser renders it as the explicit **Your turn** or **Next step** cue.
+`continuation` is required on every canvas update. Use `{ "kind": "question", "text": "...?" }` with chat and `{ "kind": "action", "text": "...", "taskTitle": "...", "targetComponentId": "...", "actionType": "run|edit|answer|adjust|read|inspect|submit" }` with work. A work action is one short sentence in the learner's language naming the exact visible target and what to do now; generic fallback copy is invalid. The localized surface title, instruction, artifact, action, and target must describe the same current task and update together. The browser renders it as the explicit **Your turn** cue or pins **Do this now** immediately before the target.
 
 `focus` controls the browser flow: `chat` shows the conversation; `work` shows the active A2UI surface. The mentor owns transitions. Automatic activity feedback stays in `work`; `chat` is for an explicit broad question or one direct question that requires the learner's answer. The browser-owned compact question composer and **Ask mentor** rescue control remain outside agent-rendered content. Whenever chat hides an existing surface, the same control becomes **Back to activity**. Rescue stays in chat while the learner asks; after the mentor reply completes, its `focus` applies even for the same `surfaceId`, so `work` returns to the preserved activity instead of hiding the control the mentor just referenced.
 

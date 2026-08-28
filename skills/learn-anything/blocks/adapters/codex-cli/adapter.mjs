@@ -84,7 +84,7 @@ When creating or updating work, a2ui_jsonl must contain newline-delimited A2UI v
 
 ${A2UI_CATALOG_PROMPT}
 
-Set continuation_kind to "question" for chat and "action" for work. continuation is the exact short question or action the learner will see; chat continuation must contain a question mark.
+Set continuation_kind to "question" for chat and "action" for work. For every work response, task_title is the localized current task title, target_component_id names one component that exists after a2ui_jsonl applies, and action_type is run, edit, answer, adjust, read, inspect, or submit matching both the main continuation verb and target component; use null for all three in chat. continuation is one short sentence in the learner's language. A work continuation names exactly what to do now, its visible target, and expected evidence when useful; never say only continue, next, complete the activity, or follow mentor guidance. Chat continuation must contain a question mark. Keep one active task, with its instruction immediately before the target and supporting explanation afterward.
 
 Keep implementation scaffolding backstage. The learner must see and edit the subject's own artifact, never a wrapper chosen only because a host runner exists. Put hidden fixtures in Code.run.setup. Prefer structured subject feedback beside its cause.
 `;
@@ -181,7 +181,11 @@ async function normalizeCanvasPayload(url, token, response) {
   return {
     focus: response.focus,
     messages,
-    continuation: { kind: response.continuation_kind, text: response.continuation },
+    continuation: {
+      kind: response.continuation_kind,
+      text: response.continuation,
+      ...(response.focus === "work" ? { taskTitle: response.task_title, targetComponentId: response.target_component_id, actionType: response.action_type } : {}),
+    },
   };
 }
 

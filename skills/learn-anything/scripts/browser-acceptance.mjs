@@ -60,10 +60,42 @@ async function api(address, path, options = {}, mentorId = null) {
 }
 
 function renderCanvas(address, stage, mentorId) {
-  const payload = canvasEventValue(canvasFromStage(stage, stage.title || "Learning canvas"));
-  payload.continuation = stage.continuation || (payload.focus === "work"
-    ? { kind: "action", text: `Complete the visible ${stage.title || "activity"}.` }
-    : { kind: "question", text: "What would you like to explore next?" });
+  const canvas = canvasFromStage(stage, stage.title || "Learning canvas");
+  const payload = canvasEventValue(canvas);
+  const expectedKind = payload.focus === "work" ? "action" : "question";
+  payload.continuation = stage.continuation?.kind === expectedKind
+    ? { ...stage.continuation }
+    : payload.focus === "work"
+      ? { kind: "action", text: `Use the primary control in “${stage.title || "this activity"}” once and inspect the visible result.` }
+      : { kind: "question", text: "What would you like to explore next?" };
+  if (payload.focus === "work") {
+    const surface = canvas.surfaces?.[canvas.activeSurfaceId];
+    const components = Object.values(surface?.components || {});
+    const target = stage.targetComponentId
+      || payload.continuation.targetComponentId
+      || components.find((component) => component.component === "Code" || component.component === "Quiz" || component.component === "Checklist" || component.component === "Params")?.id
+      || surface?.components?.root?.children?.[0];
+    const targetComponent = surface?.components?.[target];
+    const inferredActionType = targetComponent?.component === "Code"
+      ? (/\b(?:change|edit|replace|add|remove)\b/i.test(payload.continuation.text) ? "edit" : /\bsubmit\b/i.test(payload.continuation.text) ? "submit" : "run")
+      : targetComponent?.component === "Quiz" || targetComponent?.component === "Checklist"
+        ? "answer"
+        : targetComponent?.component === "Params"
+          ? "adjust"
+          : "inspect";
+    payload.continuation.taskTitle = payload.continuation.taskTitle || stage.title || "Learning activity";
+    payload.continuation.targetComponentId = target;
+    payload.continuation.actionType = payload.continuation.actionType || inferredActionType;
+    if (!stage.continuation) {
+      payload.continuation.text = inferredActionType === "run"
+        ? `Run the primary code in “${stage.title || "this activity"}” and inspect the visible result.`
+        : inferredActionType === "answer"
+          ? `Answer the primary choice in “${stage.title || "this activity"}” and inspect the result.`
+          : inferredActionType === "adjust"
+            ? `Adjust the primary control in “${stage.title || "this activity"}” and inspect the result.`
+            : `Inspect the primary artifact in “${stage.title || "this activity"}”.`;
+    }
+  }
   return api(address, "/api/a2ui", { method: "POST", body: JSON.stringify(payload) }, mentorId);
 }
 
@@ -191,8 +223,11 @@ function viewExpression() {
 }
 
 async function assertView(browser, expected, { rescued = false, returned = false, mobile = false } = {}) {
-  await waitFor(async () => {
-    const state = await browser.evaluate(viewExpression());
+  let observedState = null;
+  try {
+    await waitFor(async () => {
+      const state = await browser.evaluate(viewExpression());
+      observedState = state;
     const primaryWidth = expected === "chat" ? state.mentorWidth : state.stageWidth;
     const secondaryWidth = expected === "chat" ? state.stageWidth : state.mentorWidth;
     const primaryOpacity = expected === "chat" ? state.mentorOpacity : state.stageOpacity;
@@ -202,10 +237,13 @@ async function assertView(browser, expected, { rescued = false, returned = false
       && state.rescueState === (rescued ? "1" : "")
       && state.returnWorkState === (returned ? "1" : "")
       && primaryWidth > state.viewport * 0.9
-      && secondaryWidth < 10
-      && primaryOpacity === "1"
-      && secondaryOpacity === "0";
-  }, `${expected} computed visibility${mobile ? " on mobile" : ""}`, 4000);
+        && secondaryWidth < 10
+        && primaryOpacity === "1"
+        && secondaryOpacity === "0";
+    }, `${expected} computed visibility${mobile ? " on mobile" : ""}`, 4000);
+  } catch (error) {
+    throw new Error(`${error.message}; observed=${JSON.stringify(observedState)}`);
+  }
 
   const state = await browser.evaluate(viewExpression());
   if (!rescued && !returned) assert.equal(state.bodyFocus, expected);
@@ -436,6 +474,7 @@ try {
     surfaceId: "work-one",
     focus: "work",
     title: "One clear coding task",
+    continuation: { kind: "action", text: "Run the visible code once, then verify the output says browser-run-ok." },
     components: [
       { id: "task", type: "callout", tone: "info", title: "Only task", content: "Run the code." },
       { id: "browser-code", type: "code", language: "javascript", runnable: true, value: "console.log('initial');" },
@@ -464,13 +503,29 @@ try {
   record("work-header-controls-do-not-overlap");
   record("current-lesson-content-visible-after-repaint");
   await waitFor(() => browser.evaluate("document.querySelector('.stage-pane').contains(document.activeElement)"), "focus moves into work surface");
-  assert.ok(await browser.evaluate("document.querySelector('.work-mentor-lead')?.innerText.includes('must remain visible')"));
-  await waitFor(() => browser.evaluate("document.querySelector('.stage-pane .course-continuation')?.innerText.toLowerCase().includes('next step') === true"), "work continuation cue");
+  assert.ok(await browser.evaluate("document.querySelector('.work-history-note')?.textContent.includes('must remain visible')"));
+  assert.equal(await browser.evaluate("document.querySelector('.work-history-note')?.open"), false, "older mentor context must remain secondary and collapsed");
+  await waitFor(() => browser.evaluate("document.querySelector('.stage-pane .course-continuation')?.innerText.toLowerCase().includes('do this now') === true"), "work continuation cue");
+  const activeStepLayout = await browser.evaluate(`(() => {
+    const cue = document.querySelector('.stage-pane .course-continuation.is-current-step');
+    const target = document.querySelector('.stage-pane .stage-component.is-current-target');
+    const askControls = document.querySelectorAll('.stage-pane .ask-component');
+    return {
+      cueBeforeTarget: Boolean(cue && target && cue.nextElementSibling === target),
+      targetId: target?.dataset.componentId || '',
+      askControlCount: askControls.length,
+      cuePosition: cue ? getComputedStyle(cue).position : '',
+    };
+  })()`);
+  assert.equal(activeStepLayout.cueBeforeTarget, true, "active step must sit directly before its target");
+  assert.equal(activeStepLayout.targetId, "browser-code", "active step must highlight the actionable component");
+  assert.equal(activeStepLayout.askControlCount, 1, "supporting callouts must not add competing Ask controls");
+  assert.equal(activeStepLayout.cuePosition, "sticky", "active step must remain visible while the activity scrolls");
   record("mentor-reply-visible-through-work-transition");
   record("chat-to-work-focus-moves-to-visible-control");
-  record("work-turn-shows-explicit-next-action");
+  record("work-turn-shows-one-targeted-active-action");
 
-  await renderCanvas(address, { ...workStage, focus: "chat" }, mentorId);
+  await renderCanvas(address, { ...workStage, focus: "chat", continuation: { kind: "question", text: "Which part of this code should we clarify next?" } }, mentorId);
   await assertView(browser, "chat");
   await waitFor(() => browser.evaluate("document.querySelector('.mentor-pane .course-continuation')?.innerText.toLowerCase().includes('your turn') === true"), "chat continuation cue");
   await browser.call("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: 1, mobile: false });
@@ -507,7 +562,7 @@ try {
     method: "POST",
     body: JSON.stringify({
       focus: "work",
-      continuation: { kind: "action", text: "Change one value in the visible code." },
+      continuation: { kind: "action", text: "Change one value in the visible code.", taskTitle: "First task", targetComponentId: "scroll-code", actionType: "edit" },
       messages: [
         { version: "v0.9", deleteSurface: { surfaceId: "work-one" } },
         { version: "v0.9", createSurface: { surfaceId: "work-one", catalogId: "urn:learn-anything:catalog:v1" } },
@@ -517,13 +572,14 @@ try {
     }),
   }, mentorId);
   await assertView(browser, "work");
+  await browser.evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   await browser.evaluate("document.querySelector('.stage-scroll').scrollTop = document.querySelector('.stage-scroll').scrollHeight");
   assert.ok(await browser.evaluate("document.querySelector('.stage-scroll').scrollTop > 100"));
   await api(address, "/api/a2ui", {
     method: "POST",
     body: JSON.stringify({
       focus: "work",
-      continuation: { kind: "action", text: "Run the revised visible example." },
+      continuation: { kind: "action", text: "Run the revised visible example.", taskTitle: "Second task", targetComponentId: "scroll-code", actionType: "run" },
       messages: [
         { version: "v0.9", updateDataModel: { surfaceId: "work-one", path: "/title", value: "Second task" } },
         { version: "v0.9", updateDataModel: { surfaceId: "work-one", path: "/instruction", value: "### Second task\n\nRun the revised example." } },

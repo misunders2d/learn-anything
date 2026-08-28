@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -34,6 +34,117 @@ async function fixture({ profile = "portable-shell", modelCatalogLoader } = {}) 
   return { root, constructed, runtime, address };
 }
 
+test("saved generic work guidance is removed and queued for mentor repair", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-continuation-repair-"));
+  let runtime;
+  try {
+    const constructed = await constructSession({ topic: "Python decorators", root, profile: "portable-shell" });
+    const session = JSON.parse(await readFile(constructed.sessionPath, "utf8"));
+    session.canvas = {
+      focus: "work",
+      activeSurfaceId: "lesson",
+      surfaces: {
+        lesson: {
+          id: "lesson",
+          dataModel: { title: "Decorator task" },
+          components: {
+            root: { id: "root", component: "Column", children: ["code"] },
+            code: { id: "code", component: "Code", language: "python", value: "print('ok')", runnable: true },
+          },
+        },
+      },
+    };
+    session.continuation = { kind: "action", text: "Complete the next unfinished step in the visible activity using the mentor's guidance." };
+    await writeFile(constructed.sessionPath, `${JSON.stringify(session, null, 2)}\n`);
+
+    runtime = await createLearnAnythingServer({ sessionDir: constructed.sessionDir, kitRoot, port: 0 });
+    const address = await runtime.listen();
+    const mentorId = "repair-mentor";
+    const registered = await request(address, "/api/mentor/register", {
+      method: "POST",
+      body: JSON.stringify({ mentorId, takeover: true }),
+    });
+    assert.equal(registered.response.status, 202);
+    const next = await request(address, `/api/mentor/next?mentorId=${mentorId}`, { method: "GET" });
+    assert.equal(next.response.status, 200);
+    assert.equal(next.body.type, "stage_action");
+    assert.equal(next.body.action, "repair_activity_focus");
+    const snapshot = await request(address, "/api/session");
+    assert.equal(snapshot.body.continuation, null);
+    assert.equal(snapshot.body.canvas.focus, "work");
+
+    const repaired = await request(address, "/api/mentor/turn", {
+      method: "POST",
+      body: JSON.stringify({
+        turnId: next.body.mentorTurn.id,
+        baseRevision: next.body.mentorTurn.baseRevision,
+        message: "Переходим к цепочке двух декораторов.",
+        presentation: "activity",
+        taskTitle: "Цепочка двух декораторов",
+        focus: "work",
+        continuation: { kind: "action", text: "Нажми Run в блоке code и проверь строку ПРИВЕТ, АНЯ!.", taskTitle: "Цепочка двух декораторов", targetComponentId: "code", actionType: "run" },
+        messages: [],
+        context: { componentId: "code" },
+      }),
+    }, mentorId);
+    assert.equal(repaired.response.status, 201);
+    const afterRepair = await request(address, "/api/session");
+    assert.equal(afterRepair.body.canvas.surfaces.lesson.dataModel.title, "Цепочка двух декораторов");
+    assert.equal(afterRepair.body.continuation.text, "Нажми Run в блоке code и проверь строку ПРИВЕТ, АНЯ!.");
+    const repairedSession = JSON.parse(await readFile(constructed.sessionPath, "utf8"));
+    assert.equal(repairedSession.activityContractVersion, 1);
+  } finally {
+    await runtime?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("adapter-neutral work contract survives restart without a repair loop", async () => {
+  const root = await mkdtemp(join(tmpdir(), "learn-anything-portable-activity-"));
+  let runtime;
+  try {
+    const constructed = await constructSession({ topic: "Portable activity", root, profile: "portable-shell" });
+    runtime = await createLearnAnythingServer({ sessionDir: constructed.sessionDir, kitRoot, port: 0 });
+    let address = await runtime.listen();
+    const mentorId = "portable-mentor";
+    await request(address, "/api/mentor/register", { method: "POST", body: JSON.stringify({ mentorId, takeover: true }) });
+    const posted = await request(address, "/api/a2ui", {
+      method: "POST",
+      body: JSON.stringify({
+        focus: "work",
+        continuation: { kind: "action", text: "Copy the worked example into the practice code editor.", taskTitle: "Portable code check", targetComponentId: "code", actionType: "edit" },
+        messages: [
+          { version: "v0.9", createSurface: { surfaceId: "lesson", catalogId: "urn:learn-anything:catalog:v1" } },
+          { version: "v0.9", updateComponents: { surfaceId: "lesson", components: [
+            { id: "root", component: "Column", children: ["example", "code"] },
+            { id: "example", component: "Code", language: "javascript", value: "console.log('ok')", runnable: false },
+            { id: "code", component: "Code", language: "javascript", value: "", runnable: true },
+          ] } },
+        ],
+      }),
+    }, mentorId);
+    assert.equal(posted.response.status, 202);
+    await runtime.close();
+
+    runtime = await createLearnAnythingServer({ sessionDir: constructed.sessionDir, kitRoot, port: 0 });
+    address = await runtime.listen();
+    const resumed = await request(address, "/api/session");
+    assert.deepEqual(resumed.body.continuation, {
+      kind: "action",
+      text: "Copy the worked example into the practice code editor.",
+      taskTitle: "Portable code check",
+      targetComponentId: "code",
+      actionType: "edit",
+    });
+    assert.equal(resumed.body.canvas.surfaces.lesson.dataModel.title, "Portable code check");
+    const persisted = JSON.parse(await readFile(constructed.sessionPath, "utf8"));
+    assert.equal(persisted.activityContractVersion, 1);
+  } finally {
+    await runtime?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("surface direction is validated and persisted in the A2UI data model", () => {
   const initial = createInitialCanvas("Arabic reading");
   assert.equal(initial.surfaces.lesson.dataModel.direction, "ltr");
@@ -63,7 +174,7 @@ test("code runs stay local until the learner submits the latest result", async (
       method: "POST",
       body: JSON.stringify({
         focus: "work",
-        continuation: { kind: "action", text: "Experiment, then submit the result when ready." },
+        continuation: { kind: "action", text: "Experiment, then submit the result when ready.", taskTitle: "Experiment", targetComponentId: "code", actionType: "submit" },
         messages: [
           { version: "v0.9", createSurface: { surfaceId: "experiment", catalogId: "urn:learn-anything:catalog:v1" } },
           { version: "v0.9", updateComponents: { surfaceId: "experiment", components: [
@@ -218,7 +329,7 @@ test("mentor turn commit publishes transcript, canvas, continuation, and complet
         runId: "run-atomic",
         message: "Useful answer must survive a bad canvas proposal.",
         focus: "work",
-        continuation: { kind: "action", text: "Inspect the visible cycle." },
+        continuation: { kind: "action", text: "Inspect the visible cycle.", taskTitle: "Cycle", targetComponentId: "root", actionType: "inspect" },
         messages: [
           { version: "v0.9", createSurface: { surfaceId: "cycle", catalogId: "urn:learn-anything:catalog:v1" } },
           { version: "v0.9", updateComponents: { surfaceId: "cycle", components: [{ id: "root", component: "Column", children: ["root"] }] } },
@@ -336,7 +447,7 @@ test("server persists real A2UI v0.9 surface messages", async () => {
     const beforeValidation = (await request(address, "/api/session")).body.canvas;
     const validated = await request(address, "/api/a2ui?validate=1", {
       method: "POST",
-      body: JSON.stringify({ focus: "work", messages, continuation: { kind: "action", text: "Run the protocol example." } }),
+      body: JSON.stringify({ focus: "work", messages, continuation: { kind: "action", text: "Run the protocol example.", taskTitle: "Protocol example", targetComponentId: "editor", actionType: "run" } }),
     }, mentorId);
     assert.equal(validated.response.status, 200);
     assert.equal(validated.body.valid, true);
@@ -344,7 +455,7 @@ test("server persists real A2UI v0.9 surface messages", async () => {
 
     const updated = await request(address, "/api/a2ui", {
       method: "POST",
-      body: JSON.stringify({ focus: "work", messages, continuation: { kind: "action", text: "Run the protocol example." } }),
+      body: JSON.stringify({ focus: "work", messages, continuation: { kind: "action", text: "Run the protocol example.", taskTitle: "Protocol example", targetComponentId: "editor", actionType: "run" } }),
     }, mentorId);
     assert.equal(updated.response.status, 202);
     assert.equal(updated.body.surfaceId, "lesson");
@@ -354,7 +465,24 @@ test("server persists real A2UI v0.9 surface messages", async () => {
     assert.equal(sessionResponse.body.canvas.activeSurfaceId, "lesson");
     assert.equal(sessionResponse.body.canvas.surfaces.lesson.components.editor.component, "Code");
     assert.equal(sessionResponse.body.canvas.surfaces.lesson.dataModel.intro, "Build the protocol, not a stage-shaped imitation.");
-    assert.deepEqual(sessionResponse.body.continuation, { kind: "action", text: "Run the protocol example." });
+    assert.deepEqual(sessionResponse.body.continuation, { kind: "action", text: "Run the protocol example.", taskTitle: "Protocol example", targetComponentId: "editor", actionType: "run" });
+
+    const repeatedVisibleState = await request(address, "/api/a2ui?validate=1", {
+      method: "POST",
+      body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text: "Copy this code into the visible editor.", taskTitle: "Protocol example", targetComponentId: "editor", actionType: "edit" } }),
+    }, mentorId);
+    assert.equal(repeatedVisibleState.response.status, 400);
+    assert.match(repeatedVisibleState.body.error, /already visible/i);
+    const customRepeatedVisibleState = await request(address, "/api/mentor/event", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "CUSTOM",
+        name: "a2ui",
+        value: { focus: "work", messages: [], continuation: { kind: "action", text: "Copy this code into the visible editor.", taskTitle: "Protocol example", targetComponentId: "editor", actionType: "edit" } },
+      }),
+    }, mentorId);
+    assert.equal(customRepeatedVisibleState.response.status, 400);
+    assert.match(customRepeatedVisibleState.body.error, /already visible/i);
 
     const persisted = JSON.parse(await readFile(constructed.sessionPath, "utf8"));
     assert.equal(persisted.canvas.surfaces.lesson.components.root.component, "Column");
@@ -395,7 +523,7 @@ test("automatic activity feedback cannot hide existing work in chat", async () =
     ];
     await request(address, "/api/a2ui", {
       method: "POST",
-      body: JSON.stringify({ focus: "work", messages, continuation: { kind: "action", text: "Answer the visible quiz." } }),
+      body: JSON.stringify({ focus: "work", messages, continuation: { kind: "action", text: "Answer the visible quiz.", taskTitle: "Quiz task", targetComponentId: "quiz", actionType: "answer" } }),
     }, mentorId);
     await request(address, "/api/action", {
       method: "POST",
@@ -410,6 +538,18 @@ test("automatic activity feedback cannot hide existing work in chat", async () =
     }, mentorId);
     assert.equal(missingContinuation.response.status, 400);
     assert.match(missingContinuation.body.error, /requires continuation metadata/i);
+    const missingTarget = await request(address, "/api/a2ui?validate=1", {
+      method: "POST",
+      body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text: "Answer the visible quiz.", taskTitle: "Quiz task", actionType: "answer" } }),
+    }, mentorId);
+    assert.equal(missingTarget.response.status, 400);
+    assert.match(missingTarget.body.error, /targetComponentId/i);
+    const layoutTarget = await request(address, "/api/a2ui?validate=1", {
+      method: "POST",
+      body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text: "Answer the visible quiz.", taskTitle: "Quiz task", targetComponentId: "root", actionType: "answer" } }),
+    }, mentorId);
+    assert.equal(layoutTarget.response.status, 400);
+    assert.match(layoutTarget.body.error, /non-layout component/i);
 
     const vagueChat = await request(address, "/api/a2ui?validate=1", {
       method: "POST",
@@ -424,13 +564,13 @@ test("automatic activity feedback cannot hide existing work in chat", async () =
     assert.equal(punctuationOnly.response.status, 400);
     assert.match(punctuationOnly.body.error, /meaningful direct question/i);
 
-    for (const text of ["Continue.", "?"]) {
+    for (const text of ["Continue.", "?", "Do it.", "Do the task.", "Сделай это.", "Выполни задание.", "Complete the next unfinished step in the visible activity using the mentor's guidance."]) {
       const invalidAction = await request(address, "/api/a2ui?validate=1", {
         method: "POST",
         body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text } }),
       }, mentorId);
       assert.equal(invalidAction.response.status, 400);
-      assert.match(invalidAction.body.error, /meaningful concrete action/i);
+      assert.match(invalidAction.body.error, /concrete visible action/i);
     }
 
     for (const value of [undefined, null, { focus: "work", messages: [] }]) {
@@ -441,13 +581,13 @@ test("automatic activity feedback cannot hide existing work in chat", async () =
       assert.equal(customMissing.response.status, 400);
       assert.match(customMissing.body.error, value?.messages ? /requires continuation metadata/i : /must be an object/i);
     }
-    for (const text of ["Continue.", "?"]) {
+    for (const text of ["Continue.", "?", "Do it.", "Do the task.", "Сделай это.", "Выполни задание.", "Complete the next unfinished step in the visible activity using the mentor's guidance."]) {
       const customInvalidAction = await request(address, "/api/mentor/event", {
         method: "POST",
         body: JSON.stringify({ type: "CUSTOM", name: "a2ui", value: { focus: "work", messages: [], continuation: { kind: "action", text } } }),
       }, mentorId);
       assert.equal(customInvalidAction.response.status, 400);
-      assert.match(customInvalidAction.body.error, /meaningful concrete action/i);
+      assert.match(customInvalidAction.body.error, /concrete visible action/i);
     }
     const customHidden = await request(address, "/api/mentor/event", {
       method: "POST",
@@ -467,13 +607,17 @@ test("automatic activity feedback cannot hide existing work in chat", async () =
     assert.equal(hidden.response.status, 400);
     assert.match(hidden.body.error, /must remain in work focus/i);
 
-    for (const text of ["Answer the visible quiz.", "Next, run the code."]) {
-      const visible = await request(address, "/api/a2ui?validate=1", {
-        method: "POST",
-        body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text } }),
-      }, mentorId);
-      assert.equal(visible.response.status, 200);
-    }
+    const visible = await request(address, "/api/a2ui?validate=1", {
+      method: "POST",
+      body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text: "Answer the visible quiz.", taskTitle: "Quiz task", targetComponentId: "quiz", actionType: "answer" } }),
+    }, mentorId);
+    assert.equal(visible.response.status, 200);
+    const wrongTarget = await request(address, "/api/a2ui?validate=1", {
+      method: "POST",
+      body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text: "Run the visible code.", taskTitle: "Quiz task", targetComponentId: "quiz", actionType: "run" } }),
+    }, mentorId);
+    assert.equal(wrongTarget.response.status, 400);
+    assert.match(wrongTarget.body.error, /incompatible/i);
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
@@ -506,7 +650,7 @@ test("inline work preserves canvas and explicitly updates continuation on both m
     ];
     await request(address, "/api/a2ui", {
       method: "POST",
-      body: JSON.stringify({ focus: "work", messages, continuation: { kind: "action", text: "Change the value, then run the code." } }),
+      body: JSON.stringify({ focus: "work", messages, continuation: { kind: "action", text: "Change the value, then run the code.", taskTitle: "Original task", targetComponentId: "code", actionType: "edit" } }),
     }, mentorId);
     await request(address, "/api/message", {
       method: "POST",
@@ -524,7 +668,7 @@ test("inline work preserves canvas and explicitly updates continuation on both m
     assert.match(invalidPreview.body.error, /anchored work replies must preserve work focus/i);
     const validPreview = await request(address, "/api/a2ui?validate=1", {
       method: "POST",
-      body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text: "Inspect the highlighted line, then retry." } }),
+      body: JSON.stringify({ focus: "work", messages: [], continuation: { kind: "action", text: "Inspect the highlighted line, then retry.", taskTitle: "Original task", targetComponentId: "code", actionType: "inspect" } }),
     }, mentorId);
     assert.equal(validPreview.response.status, 200);
     const afterPreview = (await request(address, "/api/session")).body;
@@ -534,7 +678,7 @@ test("inline work preserves canvas and explicitly updates continuation on both m
     const replacement = [{ version: "v0.9", updateDataModel: { surfaceId: "lesson", path: "/title", value: "Hidden replacement" } }];
     const preserved = await request(address, "/api/a2ui", {
       method: "POST",
-      body: JSON.stringify({ focus: "work", messages: replacement, continuation: { kind: "action", text: "Inspect the highlighted line, then retry." } }),
+      body: JSON.stringify({ focus: "work", messages: replacement, continuation: { kind: "action", text: "Inspect the highlighted line, then retry.", taskTitle: "Original task", targetComponentId: "code", actionType: "inspect" } }),
     }, mentorId);
     assert.equal(preserved.body.accepted, false);
     assert.equal(preserved.body.preservedWork, true);
@@ -548,7 +692,7 @@ test("inline work preserves canvas and explicitly updates continuation on both m
       body: JSON.stringify({
         type: "CUSTOM",
         name: "a2ui",
-        value: { focus: "work", messages: replacement, continuation: { kind: "action", text: "Edit only the highlighted value." } },
+        value: { focus: "work", messages: replacement, continuation: { kind: "action", text: "Edit only the highlighted value.", taskTitle: "Original task", targetComponentId: "code", actionType: "edit" } },
       }),
     }, mentorId);
     assert.equal(customPreserved.body.accepted, false);
@@ -623,7 +767,7 @@ test("malformed A2UI graphs are rejected without replacing the last good canvas"
       method: "POST",
       body: JSON.stringify({
         focus: "work",
-        continuation: { kind: "action", text: "Inspect the graph." },
+        continuation: { kind: "action", text: "Inspect the graph.", taskTitle: "Graph", targetComponentId: "root", actionType: "inspect" },
         messages: [
           {
             version: "v0.9",
@@ -789,7 +933,7 @@ test("parameter persistence updates the whole canvas without waking the mentor",
       method: "POST",
       body: JSON.stringify({
         focus: "work",
-        continuation: { kind: "action", text: "Adjust the visible phase control." },
+        continuation: { kind: "action", text: "Adjust the visible phase control.", taskTitle: "Adjust phase", targetComponentId: "controls", actionType: "adjust" },
         messages: [
           { version: "v0.9", createSurface: { surfaceId: "lesson", catalogId: "urn:learn-anything:catalog:v1" } },
           { version: "v0.9", updateComponents: { surfaceId: "lesson", components: Object.values(payload.surfaces.lesson.components) } },

@@ -5,7 +5,7 @@ import process from "node:process";
 import { createSdkMcpServer, startup, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { A2UI_CATALOG_PROMPT } from "../../a2ui/prompt.mjs";
-import { createClaudeEventState, fallbackCanvasForClaudeItem, mapClaudeMessage } from "./events.mjs";
+import { createClaudeEventState, mapClaudeMessage, missingStructuredContinuationError } from "./events.mjs";
 
 function option(args, name) {
   const index = args.indexOf(name);
@@ -83,13 +83,20 @@ const renderCanvas = tool(
     messages: z.array(z.record(z.string(), z.unknown())).max(100),
     continuationKind: z.enum(["question", "action"]),
     continuation: z.string().min(1),
+    taskTitle: z.string().min(1).max(120).optional(),
+    targetComponentId: z.string().min(1).max(200).optional(),
+    actionType: z.enum(["run", "edit", "answer", "adjust", "read", "inspect", "submit"]).optional(),
   },
-  async ({ focus, messages, continuationKind, continuation }) => {
+  async ({ focus, messages, continuationKind, continuation, taskTitle, targetComponentId, actionType }) => {
     try {
       const result = await post(url, "/api/a2ui", {
         focus,
         messages,
-        continuation: { kind: continuationKind, text: continuation },
+        continuation: {
+          kind: continuationKind,
+          text: continuation,
+          ...(focus === "work" ? { taskTitle, targetComponentId, actionType } : {}),
+        },
       }, token, mentorId);
       continuationPostedThisTurn = true;
       return { content: [{ type: "text", text: `Canvas updated: ${result.surfaceId || "preserved"}` }] };
@@ -123,7 +130,7 @@ const systemAppend = `You are the headless mentor inside a learn-anything browse
 
 Drive one primary activity at a time. Use chat focus for a broad learner question or one genuine question that requires their answer. Do not switch to chat merely to acknowledge, explain, or debrief an observed activity result; keep that progression in work focus with one visible next action. Inline work clarification stays on the current canvas: call render_canvas with work focus, no messages, and one concrete action continuation; the server preserves the mounted editor and result while updating that cue. Keep implementation scaffolding backstage and show the subject's native artifact. Use a visual only for a named relationship: Figure for structure, Plot for quantitative change, Math for notation, and finite Params frames for a bounded state sequence. A control must immediately change a visible bound artifact; a plot illustrates rather than proves.
 
-For every turn, call render_canvas exactly once—even when messages is empty—to publish structured continuation metadata. continuationKind is "question" for chat and "action" for work; a chat continuation contains a question mark. When creating or updating work, send actual A2UI v0.9 messages. A new canvas normally sends createSurface, updateComponents, and updateDataModel. Use catalogId "urn:learn-anything:catalog:v1". All messages include version "v0.9".
+For every turn, call render_canvas exactly once—even when messages is empty—to publish structured continuation metadata. continuationKind is "question" for chat and "action" for work; a chat continuation contains a question mark. Every work call requires taskTitle, targetComponentId, and actionType. Choose actionType run, edit, answer, adjust, read, inspect, or submit so it matches the main continuation verb and the target component; targetComponentId must exist on the active surface after messages apply. Write one short continuation sentence in the learner's language. A work continuation names exactly what to do now, its visible target, and expected evidence when useful; never say only continue, next, complete the activity, or follow mentor guidance. Keep one active task, place its instruction immediately before the target, and put supporting explanation afterward. When creating or updating work, send actual A2UI v0.9 messages. A new canvas normally sends createSurface, updateComponents, and updateDataModel. Use catalogId "urn:learn-anything:catalog:v1". All messages include version "v0.9".
 
 ${A2UI_CATALOG_PROMPT}
 
@@ -172,11 +179,12 @@ try {
     if (message.type === "result") {
       const runId = activeRunId || message.uuid || crypto.randomUUID();
       if (message.subtype === "success" && !continuationPostedThisTurn) {
-        await post(url, "/api/a2ui", fallbackCanvasForClaudeItem(activeBrowserItem), token, mentorId);
-        continuationPostedThisTurn = true;
+        await post(url, "/api/mentor/event", { ...missingStructuredContinuationError(), threadId: session.slug, runId }, token, mentorId);
+      } else if (message.subtype === "success") {
+        await post(url, "/api/mentor/event", { type: "RUN_FINISHED", threadId: session.slug, runId, outcome: { type: "success" } }, token, mentorId);
+      } else {
+        await post(url, "/api/mentor/event", { type: "RUN_ERROR", message: (message.errors || []).join("\n") || message.subtype, code: message.subtype }, token, mentorId);
       }
-      if (message.subtype === "success") await post(url, "/api/mentor/event", { type: "RUN_FINISHED", threadId: session.slug, runId, outcome: { type: "success" } }, token, mentorId);
-      else await post(url, "/api/mentor/event", { type: "RUN_ERROR", message: (message.errors || []).join("\n") || message.subtype, code: message.subtype }, token, mentorId);
       activeRunId = null;
       activeBrowserItem = null;
     }

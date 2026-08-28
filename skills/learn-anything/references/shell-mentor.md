@@ -20,6 +20,6 @@ Update browser canvas:
 node <kit-root>/scripts/mentor.mjs canvas --url <server-url> --token <access-token> --mentor-id <stable-id> --file <payload.json>
 ```
 
-`payload.json` uses `{ "focus": "chat|work", "messages": [...], "continuation": { "kind": "question|action", "text": "..." } }`. Chat requires a direct question; work requires a concrete action.
+`payload.json` uses `{ "focus": "chat|work", "messages": [...], "continuation": { "kind": "question|action", "text": "...", "taskTitle": "required for work", "targetComponentId": "required for work", "actionType": "run|edit|answer|adjust|read|inspect|submit" } }`. Chat requires a direct question. Work requires a concrete action, localized task title, target component that exists on the active surface after messages apply, and actionType compatible with both the action verb and target component.
 
 Repeat `next` without `--takeover` only while actively supervising learning session. Stop when learner ends session or server disappears. Per-turn delivery is degraded mode; browser must show that status.

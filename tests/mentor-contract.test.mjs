@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import test from "node:test";
 import { kitRoot } from "../skills/learn-anything/scripts/construct.mjs";
 import {
@@ -45,6 +47,19 @@ test("profile selection prefers verified capabilities rather than harness branch
   assert.equal(legacyPi.id, "codex-cli");
   assert.equal(codexOnly.id, "codex-cli");
   assert.equal(profiles.find((profile) => profile.id === "portable-shell").selection.manualOnly, true);
+});
+
+test("all persistent and manual adapters expose the same work activity metadata", async () => {
+  const codexSchema = JSON.parse(await readFile(resolve(kitRoot, "blocks/adapters/codex-cli/response.schema.json"), "utf8"));
+  assert.ok(codexSchema.required.includes("task_title"));
+  assert.ok(codexSchema.required.includes("target_component_id"));
+  assert.ok(codexSchema.required.includes("action_type"));
+  const claudeAdapter = await readFile(resolve(kitRoot, "blocks/adapters/claude-agent-sdk/adapter.mjs"), "utf8");
+  assert.match(claudeAdapter, /taskTitle: z\.string/);
+  assert.match(claudeAdapter, /targetComponentId: z\.string/);
+  assert.match(claudeAdapter, /actionType: z\.enum/);
+  const manualReference = await readFile(resolve(kitRoot, "references/shell-mentor.md"), "utf8");
+  assert.match(manualReference, /taskTitle.*targetComponentId/s);
 });
 
 test("mentor runtime resolves the adapter declared by the composition", async () => {
