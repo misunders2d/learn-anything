@@ -5,11 +5,12 @@ import process from "node:process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { A2UI_CATALOG_PROMPT } from "../../a2ui/prompt.mjs";
-import { plainTextMentorCandidate, reconcileMentorTurn } from "../mentor-turn.mjs";
+import { plainTextMentorCandidate, reconcileMentorTurn, TEACHING_EVIDENCE_PROMPT, teachingPatternsPrompt } from "../mentor-turn.mjs";
 import { PiRpcClient, piRpcArgs } from "./rpc-client.mjs";
 
 const adapterDir = dirname(fileURLToPath(import.meta.url));
 const extensionPath = join(adapterDir, "mentor-extension.ts");
+let activeRpcClient = null;
 
 function option(args, name) {
   const index = args.indexOf(name);
@@ -60,6 +61,7 @@ Finish every turn by calling complete_mentor_turn exactly once. Never print JSON
 - continuation.action_type: required for activity/inline; choose run, edit, answer, adjust, read, inspect, or submit so it matches both the main verb in continuation.text and the target component. Omit it for chat.
 - continuation.text: one short sentence in the learner's language. For activity/inline, name exactly what to do now, the visible target, and expected evidence when useful. Never say only continue, next, complete the activity, or follow the mentor's guidance. If surface_plan already puts code or content into the target, do not tell the learner to copy, paste, insert, or type that same artifact; ask for the next real interaction with it.
 - Keep one active task. Put its brief instruction immediately before its target component; supporting explanation and feedback follow it.
+- pattern: optional {title, description, tags, surface_plan} with a newly authored generic standalone teaching example, never copied learner data.
 - surface_plan: omit when canvas stays unchanged. To change it, provide structured operations; never provide JSONL strings.
 
 Surface operation kinds map to A2UI v0.9:
@@ -68,8 +70,10 @@ Surface operation kinds map to A2UI v0.9:
 - update_data_model: surface_id, absolute path, and value.
 - delete_surface: surface_id.
 New work normally uses create_surface, update_components, and update_data_model. Catalog ID is urn:learn-anything:catalog:v1.
+${TEACHING_EVIDENCE_PROMPT}
+
 ${A2UI_CATALOG_PROMPT}
-Keep subject-native artifacts visible. Use visuals only for relationships learner needs to see. Never claim code ran unless browser execution reports it.`;
+Keep subject-native artifacts visible. Use visuals only for relationships learner needs to see. Never claim code ran unless browser execution reports it. Optional milestone {title, takeaway, nextStep, concepts, misconceptions} records demonstrated progress, never mastery inferred from a click.`;
 }
 
 export function mentorEventPrompt(item, history = []) {
@@ -87,7 +91,7 @@ export function mentorEventPrompt(item, history = []) {
     learnerInput = `Browser activity event:\n${JSON.stringify(item, null, 2)}`;
   }
   const transcript = history.map((message) => `${message.role === "assistant" ? "Mentor" : "Learner"}: ${message.content}`).join("\n\n");
-  return `${transcript ? `Initialize this persistent mentor from recent browser transcript:\n${transcript}\n\n` : ""}Browser event:\n${learnerInput}\n\nCall complete_mentor_turn exactly once.`;
+  return `${teachingPatternsPrompt(item)}${transcript ? `Initialize this persistent mentor from recent browser transcript:\n${transcript}\n\n` : ""}Browser event:\n${learnerInput}\n\nCall complete_mentor_turn exactly once.`;
 }
 
 export function candidateFromPiTurn(turn) {
@@ -97,7 +101,7 @@ export function candidateFromPiTurn(turn) {
   return plainTextMentorCandidate(turn.assistantText);
 }
 
-async function createRpcClient({ command, sessionDir, sessionId, model, topic }) {
+async function createRpcClient({ command, sessionDir, sessionId, model, topic, timeoutMs }) {
   const args = piRpcArgs({
     sessionDir,
     sessionId,
@@ -106,13 +110,18 @@ async function createRpcClient({ command, sessionDir, sessionId, model, topic })
     sessionName: sessionId ? `Learn Anything: ${topic}` : null,
     extensionPath,
   });
-  const client = new PiRpcClient({ command, args, cwd: sessionDir });
-  await client.ready();
+  const client = new PiRpcClient({ command, args, cwd: sessionDir, expectedSessionId: sessionId, timeoutMs });
+  activeRpcClient = client;
+  client.initialState = await client.ready();
+  if (model && `${client.initialState.model.provider}/${client.initialState.model.id}` !== model) {
+    client.close();
+    throw new Error("Pi RPC selected model does not match this course.");
+  }
   return client;
 }
 
 async function preflightPi(options) {
-  const client = await createRpcClient({ ...options, sessionId: null });
+  const client = await createRpcClient({ ...options, sessionId: null, timeoutMs: 20_000 });
   try {
     const turn = await client.prompt("Readiness check. Call complete_mentor_turn with message pi-ready, presentation chat, continuation kind question, continuation text What would you like to learn, and no surface plan.");
     const candidate = candidateFromPiTurn(turn);
@@ -146,8 +155,20 @@ async function main() {
   if (!saved.agentSessionId) throw new Error("Session has no persistent Pi mentor session id.");
   await mkdir(join(sessionDir, "runtime", "mentor-sessions"), { recursive: true });
 
+  const pollController = new AbortController();
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    pollController.abort();
+    activeRpcClient?.close();
+  };
+  process.once("SIGINT", () => { void stop(); });
+  process.once("SIGTERM", () => { void stop(); });
+
   const command = saved.assembly?.capabilities?.commands?.pi || "pi";
   await preflightPi({ command, sessionDir, model: saved.mentorModel, topic: saved.topic });
+  if (stopping) return;
   const rpc = await createRpcClient({
     command,
     sessionDir,
@@ -155,19 +176,9 @@ async function main() {
     model: saved.mentorModel,
     topic: saved.topic,
   });
+  if (stopping) { rpc.close(); return; }
   let activeModel = saved.mentorModel || null;
   const mentorId = randomUUID();
-  const pollController = new AbortController();
-  let stopping = false;
-  const stop = async () => {
-    if (stopping) return;
-    stopping = true;
-    pollController.abort();
-    try { await rpc.abort(); } catch {}
-    rpc.close();
-  };
-  process.once("SIGINT", () => { void stop(); });
-  process.once("SIGTERM", () => { void stop(); });
 
   await requestJson(url, "/api/mentor/register", token, { method: "POST", body: JSON.stringify({ mentorId, takeover: true }) });
   await mentorPost(url, "/api/mentor/ready", token, mentorId, {});
@@ -186,17 +197,18 @@ async function main() {
     if (!poll.ok) throw new Error(`Mentor poll failed: ${poll.status} ${JSON.stringify(item)}`);
     if (!item) continue;
     const runId = randomUUID();
-    await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_STARTED", threadId: saved.slug, runId, turnId: item.mentorTurn?.id });
+    await mentorPost(url, "/api/mentor/event", token, mentorId, { type: "RUN_STARTED", threadId: saved.slug, runId, turnId: item.mentorTurn?.id, baseRevision: item.mentorTurn?.baseRevision });
     try {
       const before = await requestJson(url, "/api/session", token);
       if (before.mentorModel && before.mentorModel !== activeModel) {
         await rpc.setModel(before.mentorModel);
         activeModel = before.mentorModel;
       }
-      const history = before.mentorSessionInitialized
+      const history = before.mentorSessionInitialized && rpc.initialState.messageCount > 0
         ? []
         : (before.transcript || []).filter((message) => message.id !== item.message?.id).slice(-12);
       let turn = await rpc.prompt(mentorEventPrompt(item, history));
+      rpc.initialState.messageCount += 1;
       let candidate = candidateFromPiTurn(turn);
       try {
         await commitTurn({
@@ -221,13 +233,14 @@ async function main() {
         type: "RUN_ERROR",
         message: error.message,
         code: "MENTOR_ERROR",
-        turnId: item.mentorTurn?.id,
+        turnId: item.mentorTurn?.id, baseRevision: item.mentorTurn?.baseRevision,
         runId,
       }).catch(() => {});
+      if (rpc.closed) throw error; // Supervisor must restart an unsynchronized provider.
     }
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+  main().catch((error) => { activeRpcClient?.close(); process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
 }

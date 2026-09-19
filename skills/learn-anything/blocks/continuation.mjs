@@ -27,16 +27,6 @@ export function isGenericAction(value) {
   return [...ENGLISH_GENERIC_ACTIONS, ...CYRILLIC_GENERIC_ACTIONS].some((pattern) => pattern.test(normalized));
 }
 
-const ACTION_PATTERNS = {
-  run: /(?:\brun\b|\bexecute\b|запуст|выполн[ии].*код|нажми\s+run)/iu,
-  edit: /(?:\bedit\b|\bchange\b|\breplace\b|\badd\b|\bremove\b|\bcopy\b|\bpaste\b|\binsert\b|\btype\b|измени|замени|добавь|удали|исправь|скопируй|вставь|введи|перепиши)/iu,
-  answer: /(?:\banswer\b|\bchoose\b|\bselect\b|ответь|выбери)/iu,
-  adjust: /(?:\badjust\b|\bmove\b|\bdrag\b|\bset\b|настрой|передвинь|установи|измени)/iu,
-  read: /(?:\bread\b|\breview\b|прочитай|изучи|ознакомься)/iu,
-  inspect: /(?:\binspect\b|\bcompare\b|\bcheck\b|\bverify\b|\bobserve\b|проверь|сравни|посмотри|убедись)/iu,
-  submit: /(?:\bsubmit\b|\bsend\b|отправь|сдай)/iu,
-};
-
 const COMPONENT_ACTIONS = {
   Code: new Set(["run", "edit", "inspect", "submit"]),
   Quiz: new Set(["answer", "inspect"]),
@@ -52,10 +42,11 @@ const COMPONENT_ACTIONS = {
   Mermaid: new Set(["read", "inspect"]),
 };
 
-export const ACTION_TYPES = Object.freeze(Object.keys(ACTION_PATTERNS));
+export const ACTION_TYPES = Object.freeze(["run", "edit", "answer", "adjust", "read", "inspect", "submit"]);
 
 export function actionMatchesType(value, actionType) {
-  return Boolean(ACTION_PATTERNS[actionType]?.test(normalizedContinuationText(value)));
+  // The typed action and target define behavior; localized prose is not a parser.
+  return ACTION_TYPES.includes(actionType) && Boolean(normalizedContinuationText(value));
 }
 
 export function actionSupportsComponent(actionType, componentType) {

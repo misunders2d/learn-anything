@@ -1,15 +1,13 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { usableCommand } from "./availability.mjs";
 import { parseSqlResult, sqlRunnerSource } from "./sqlite-runner.mjs";
 
 const LIMIT_BYTES = 200_000;
 const TIMEOUT_MS = 15_000;
 
-function exists(command) {
-  const locator = process.platform === "win32" ? "where" : "which";
-  return spawnSync(locator, [command], { stdio: "ignore" }).status === 0;
-}
+const exists = usableCommand;
 
 function pythonPlan(file) {
   if (exists("python3")) return ["python3", [file]];

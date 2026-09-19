@@ -12,7 +12,7 @@ import {
 import { activeSurface, applyA2uiMessages, applyParameterFrame, resolveDataBinding, surfaceComponents } from "../../a2ui/state.mjs";
 import { indentWithTab } from "./editor-input.mjs";
 import { clearDraft, loadDraft, saveDraft } from "./draft-store.mjs";
-import { connectionIssueFor, firstLearnerComponentId, resolveFocus, shouldReleaseRescue, workTaskKey } from "./workspace-state.mjs";
+import { connectionIssueFor, firstLearnerComponentId, learningProgress, recoveryCanAct, resultMatchesCode, resolveFocus, shouldReleaseRescue, workTaskKey } from "./workspace-state.mjs";
 
 marked.setOptions({ gfm: true, breaks: true });
 mermaid.initialize({
@@ -58,6 +58,7 @@ async function api(path, options = {}) {
     const body = await response.json().catch(() => ({}));
     const error = new Error(body.error || `${response.status} ${response.statusText}`);
     error.status = response.status;
+    error.result = body;
     throw error;
   }
   if (response.status === 204) return null;
@@ -319,6 +320,36 @@ function DataTable({ columns = [], rows = [], caption }) {
   );
 }
 
+function LearningStatus({ progress, recovery, pending, error, notice, onRecover }) {
+  const { count, milestones, nextStep } = learningProgress(progress);
+  return <aside className="learning-status scroll-region" aria-label="Learning progress and recovery">
+    <details className="learning-progress">
+      <summary>Learning progress <span>{count ? `${count} milestone${count === 1 ? "" : "s"}` : "Getting started"}</span></summary>
+      <div className="progress-content">
+        {milestones.length ? <ol>{milestones.map((milestone, index) => <li key={milestone.turnId || index}>
+          <strong>{milestone.title}</strong>
+          {milestone.takeaway && <p>{milestone.takeaway}</p>}
+          {milestone.nextStep && <p className="milestone-next">Next: {milestone.nextStep}</p>}
+        </li>)}</ol> : <p>Your mentor will record milestones as you work through the lesson.</p>}
+        {nextStep && <p className="progress-next"><strong>Next step:</strong> {nextStep}</p>}
+      </div>
+    </details>
+    {recovery.map((item) => <section className="mentor-recovery" key={item.turnId} aria-label="Mentor request">
+      <div>
+        <strong>{recoveryCanAct(item) ? "Mentor response paused" : "Mentor request in progress"}</strong>
+        <p>{item.summary || "Your request is saved."}</p>
+        {recoveryCanAct(item) && <p className="recovery-hint">Retry this request, or dismiss it and continue your activity.</p>}
+      </div>
+      {recoveryCanAct(item) && <div className="recovery-actions">
+        <button type="button" disabled={Boolean(pending)} onClick={() => onRecover(item.turnId, "retry")}>{pending === `${item.turnId}:retry` ? "Retrying…" : "Retry"}</button>
+        <button type="button" disabled={Boolean(pending)} onClick={() => onRecover(item.turnId, "dismiss")}>{pending === `${item.turnId}:dismiss` ? "Dismissing…" : "Dismiss"}</button>
+      </div>}
+    </section>)}
+    {error && <p className="send-error" role="alert">{error}</p>}
+    <p className="visually-hidden" role="status">{notice}</p>
+  </aside>;
+}
+
 function CodeBlock({ component, onSubmitToMentor }) {
   const draftKey = `code:${component._surfaceId || "surface"}:${component.id || "editor"}`;
   const [code, setCode] = useState(() => loadDraft(window.localStorage, draftKey, component.value || ""));
@@ -327,9 +358,10 @@ function CodeBlock({ component, onSubmitToMentor }) {
   const [submitted, setSubmitted] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [result, setResult] = useState(component.lastResult || null);
-  const [lastRunCode, setLastRunCode] = useState(() => component.lastResult ? component.value || "" : null);
+  const [saveError, setSaveError] = useState("");
   const saveTimer = useRef(null);
   const resultRef = useRef(null);
+  const codeRef = useRef(code);
 
   function scheduleSave(value) {
     clearTimeout(saveTimer.current);
@@ -341,15 +373,18 @@ function CodeBlock({ component, onSubmitToMentor }) {
           body: JSON.stringify({ action: "code_change", componentId: component.id, code: value }),
         });
         clearDraft(window.localStorage, draftKey, value);
+        setSaveError("");
       } catch (error) {
-        setResult({ error: `Could not save editor state: ${error.message}` });
+        setSaveError("Could not save editor state. Your draft is kept in this browser.");
       }
     }, 400);
   }
 
   useEffect(() => {
     const local = loadDraft(window.localStorage, draftKey, null);
-    setCode(local ?? component.value ?? "");
+    const nextCode = local ?? component.value ?? "";
+    codeRef.current = nextCode;
+    setCode(nextCode);
     if (local !== null && local !== component.value) scheduleSave(local);
   }, [component.value, draftKey]);
   useEffect(() => setResult(component.lastResult || null), [component.lastResult]);
@@ -359,6 +394,7 @@ function CodeBlock({ component, onSubmitToMentor }) {
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
   function updateCode(value) {
+    codeRef.current = value;
     setCode(value);
     setSubmitted(false);
     setSubmitError("");
@@ -378,22 +414,20 @@ function CodeBlock({ component, onSubmitToMentor }) {
         body: JSON.stringify({ componentId: component.id || null, language: component.language || "javascript", code: codeAtRun }),
       });
       setResult(nextResult);
-      setLastRunCode(codeAtRun);
     } catch (error) {
-      setResult({ error: error.message });
-      setLastRunCode(null);
+      setResult(resultMatchesCode(error.result, codeAtRun) ? error.result : { error: error.message });
     } finally {
       setRunning(false);
     }
   }
 
   async function submit() {
-    if (!result || code !== lastRunCode || submitting) return;
+    if (!resultMatchesCode(result, code) || running || submitting) return;
     setSubmitting(true);
     setSubmitError("");
     try {
       await onSubmitToMentor({ componentId: component.id, code });
-      setSubmitted(true);
+      setSubmitted(codeRef.current === code);
     } catch (error) {
       setSubmitError(error.message);
     } finally {
@@ -401,7 +435,7 @@ function CodeBlock({ component, onSubmitToMentor }) {
     }
   }
 
-  const canSubmit = Boolean(result && code === lastRunCode && !running);
+  const canSubmit = resultMatchesCode(result, code) && !running;
   return (
     <section className="playground-surface overflow-hidden">
       <div className="surface-toolbar">
@@ -417,12 +451,14 @@ function CodeBlock({ component, onSubmitToMentor }) {
       </div>
       <div className="editor-shell"><CodeEditor language={component.language || "javascript"} value={code} onChange={updateCode} /></div>
       {result && <div ref={resultRef} className="execution-result" aria-live="polite">
+        {!resultMatchesCode(result, code) && <p className="stale-result">Earlier output. Run the current code before submitting.</p>}
         {result.table?.columns?.length
           ? <DataTable columns={result.table.columns} rows={result.table.rows} caption={`Query result · ${result.table.rowCount} row${result.table.rowCount === 1 ? "" : "s"}`} />
           : <pre className={`console-output ${result.error || result.exitCode ? "text-red-300" : "text-slate-200"}`}>{result.error || result.stderr || result.stdout || "Completed."}</pre>}
         {!result.error && <div className="run-meta">{result.durationMs}ms{result.table?.truncatedRows ? " · first 500 rows" : ""}</div>}
       </div>}
       {submitError && <p className="submit-error">Could not submit: {submitError}</p>}
+      {saveError && <p className="submit-error" role="status">{saveError}</p>}
     </section>
   );
 }
@@ -548,7 +584,7 @@ function StageComponent({ component, onContext, onParameterChange, onSubmitToMen
     const tone = component.tone === "success" ? "is-success" : component.tone === "warning" ? "is-warning" : "";
     return <section className={`callout-surface ${tone}`}><h3>{component.title}</h3><Markdown content={component.content} /></section>;
   }
-  if (component.type === "code") return <CodeBlock component={component} onSubmitToMentor={onSubmitToMentor} />;
+  if (component.type === "code") return <CodeBlock key={`${component._surfaceId}:${component.id}`} component={component} onSubmitToMentor={onSubmitToMentor} />;
   if (component.type === "table") return <DataTable columns={component.columns} rows={component.rows} caption={component.caption} />;
   if (component.type === "passage") return <PassageBlock component={component} />;
   if (component.type === "figure") return <FigureBlock component={component} />;
@@ -659,6 +695,12 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState(null);
   const [continuation, setContinuation] = useState(null);
+  const [progress, setProgress] = useState(null);
+  const [mentorRecovery, setMentorRecovery] = useState([]);
+  const [recoveryPending, setRecoveryPending] = useState("");
+  const [recoveryError, setRecoveryError] = useState("");
+  const [recoveryNotice, setRecoveryNotice] = useState("");
+  const recoveryBusy = useRef(false);
   const [degraded, setDegraded] = useState([]);
   const [connected, setConnected] = useState(false);
   const [mentorAttached, setMentorAttached] = useState(false);
@@ -751,6 +793,9 @@ function App() {
 
   function focusWorkSurface() {
     const stage = stageScrollRef.current;
+    // A learner may already have focused progress/recovery while the incoming
+    // canvas frame was pending. Do not steal that explicit keyboard focus.
+    if (document.activeElement !== stage && document.activeElement?.closest(".stage-pane")) return;
     const target = stage?.querySelector('.parameter-surface input:not([disabled]), .playground-surface textarea:not([disabled]), .playground-surface button:not([disabled]), .interaction-list button:not([disabled]), .checklist-list input:not([disabled]), .work-question-input:not([disabled]), .stage-pane button:not(.ask-component):not([disabled])');
     (target || stage)?.focus({ preventScroll: true });
   }
@@ -869,6 +914,8 @@ function App() {
           return next;
         });
         setContinuation(event.snapshot.continuation || null);
+        setProgress(event.snapshot.progress || null);
+        setMentorRecovery(Array.isArray(event.snapshot.mentorRecovery) ? event.snapshot.mentorRecovery : []);
         setDegraded(event.snapshot.assembly?.degraded || []);
         if (event.snapshot.mentorModel) setMentorModel(event.snapshot.mentorModel);
         setMentorState(event.snapshot.mentorState || "idle");
@@ -916,6 +963,10 @@ function App() {
         });
       } else if (event.type === "CUSTOM" && event.name === "mentor_presence") {
         setMentorAttached(Boolean(event.value?.attached));
+      } else if (event.type === "CUSTOM" && event.name === "mentor_recovery") {
+        setMentorRecovery(Array.isArray(event.value) ? event.value : []);
+      } else if (event.type === "CUSTOM" && event.name === "learning_progress") {
+        setProgress(event.value || null);
       } else if (event.type === "CUSTOM" && event.name === "mentor_state") {
         setMentorState(event.value?.state || "idle");
       } else if (event.type === "CUSTOM" && event.name === "mentor_model") {
@@ -935,6 +986,23 @@ function App() {
     if (source === "work") setWorkDraft(value);
     else setChatDraft(value);
     saveDraft(window.localStorage, source, value);
+  }
+
+  async function recoverMentor(turnId, action) {
+    if (recoveryBusy.current) return;
+    recoveryBusy.current = true;
+    setRecoveryPending(`${turnId}:${action}`);
+    setRecoveryError("");
+    setRecoveryNotice("");
+    try {
+      await api("/api/mentor/recovery", { method: "POST", body: JSON.stringify({ turnId, action }) });
+      setRecoveryNotice(action === "retry" ? "Request queued for retry. Your activity is unchanged." : "Request dismissed. Your activity is unchanged.");
+    } catch {
+      setRecoveryError("Could not update this request. Your work is safe; try again when connected.");
+    } finally {
+      recoveryBusy.current = false;
+      setRecoveryPending("");
+    }
   }
 
   function captureSelection(event) {
@@ -1069,6 +1137,7 @@ function App() {
             <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
           </div>
         </header>
+        <LearningStatus progress={progress} recovery={mentorRecovery} pending={recoveryPending} error={recoveryError} notice={recoveryNotice} onRecover={recoverMentor} />
         {emptyConversation ? (
           <div className="welcome-shell">
             <div className="welcome-copy">
@@ -1098,6 +1167,7 @@ function App() {
             <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
           </div>
         </header>
+        <LearningStatus progress={progress} recovery={mentorRecovery} pending={recoveryPending} error={recoveryError} notice={recoveryNotice} onRecover={recoverMentor} />
         <div ref={stageScrollRef} className="stage-scroll scroll-region" tabIndex="-1" aria-labelledby="stage-title">
           <div className="stage-column">
             {continuation?.kind === "action" && !currentTargetId && <ContinuationBanner continuation={continuation} active />}
@@ -1112,7 +1182,7 @@ function App() {
               <div className="anchored-note-label">{usesCyrillic(workExchange.question.content) ? "Ваш вопрос" : "Your question"}</div>
               <Markdown content={workExchange.question.content} />
               <div className="anchored-note-label">{usesCyrillic(workExchange.question.content) ? "Ментор" : "Mentor"}</div>
-              {workExchange.answer ? <Markdown content={workExchange.answer.content} /> : <p>{mentorState === "responding" ? "Responding…" : "Waiting…"}</p>}
+              {workExchange.answer ? <Markdown content={workExchange.answer.content} /> : <p>{mentorState === "responding" ? "Responding…" : mentorState === "waiting" ? "Waiting…" : "No response yet."}</p>}
             </section>}
           </div>
         </div>

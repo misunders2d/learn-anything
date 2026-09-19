@@ -45,7 +45,7 @@ The terminal agent is the **launcher and supervisor**, not the mentor. It remain
 - Stays available for side conversation — inspecting `.learnings/`, adjusting the lesson plan, restarting the mentor.
 - Supervises: if the mentor process dies, the terminal agent relaunches it.
 
-**Preferred-profile tradeoff:** the mentor is a separate session from the terminal session. This enables token streaming in the reference composition; continuity is preserved by resumability, not by session identity. A harness may use another bridge if it provides equivalent browser interaction and continuity.
+**Preferred-profile tradeoff:** the mentor is a separate session from the terminal session. Shipped persistent adapters buffer the full answer and atomically publish validated text and canvas; continuity is preserved by resumability, not by sharing session identity. A harness may use another bridge if it provides equivalent browser interaction and continuity.
 
 ---
 
@@ -60,13 +60,13 @@ Two open protocols provide the preferred, most capable block pairing. The constr
 
 **In the reference profile, A2UI messages ride inside AG-UI events.** This is the pairing documented jointly by Google and CopilotKit.
 
-Fallbacks must preserve the behavioral contract, not necessarily these wire protocols: live or progressively delivered mentor output where possible, user actions back to the mentor, visible execution feedback, persistent state, and a stage that can change with the lesson flow. Any reduced capability must be made explicit to the learner rather than silently removed.
+Fallbacks must preserve the behavioral contract, not necessarily these wire protocols: mentor activity status followed by complete validated answers, user actions back to the mentor, visible execution feedback, persistent state, and a stage that can change with the lesson flow. Any reduced capability must be made explicit to the learner rather than silently removed.
 
 ### 3.1 Why both
 
 A2UI is a declarative UI description format — four message types (`createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`) plus a catalog of pre-approved components, so no executable code crosses the trust boundary. It explicitly **does not** carry streaming agent text.
 
-The mentor stream is streaming agent text. AG-UI supplies that layer: ~16 event types across lifecycle (`RUN_STARTED`/`RUN_FINISHED`), text (`TEXT_MESSAGE_START`/`CONTENT`/`END`), tool calls (`TOOL_CALL_START`/`ARGS`/`RESULT`), state (`STATE_SNAPSHOT`/`STATE_DELTA`), and `CUSTOM`.
+AG-UI supports streamed agent text at the protocol level. Current persistent adapters publish complete committed turns; lifecycle and custom events still report progress. The protocol supplies ~16 event types across lifecycle (`RUN_STARTED`/`RUN_FINISHED`), text (`TEXT_MESSAGE_START`/`CONTENT`/`END`), tool calls (`TOOL_CALL_START`/`ARGS`/`RESULT`), state (`STATE_SNAPSHOT`/`STATE_DELTA`), and `CUSTOM`.
 
 ### 3.2 Custom component catalog
 
@@ -203,16 +203,18 @@ Each session is encapsulated in an isolated directory:
 
 **Resume sequence:**
 
-1. Learner opens the dashboard and picks a topic.
+1. Learner reopens the existing course with `learn-anything start --session <directory>`.
 2. The assembled server reads `session.json` and repaints chat + last stage **immediately**, before the agent boots.
 3. The mentor adapter respawns the mentor with the stored session id.
-4. Mentor opens with a recap ("last time we got lifetimes in structs working; exercise 3 still fails").
+4. Saved progress and milestones remain visible. Pending work resumes; failed work offers retry or dismissal. On the next learner turn, the mentor uses the saved context to continue.
 
 Resume therefore feels instant rather than like a cold reload, survives reboot, and can also be triggered from the terminal agent.
 
 ### 6.2 Checkpointing against context loss
 
-Agent context can grow long or be compacted. The mentor writes a `notes.md` summary at each milestone so a fresh mentor can be rebuilt from notes if the agent session is ever lost.
+Agent context can grow long or be compacted. Any persistent adapter can submit an optional milestone with its atomic mentor turn. The host persists milestones in `session.json` and derives `notes.md` and `journal.md` from those records. Restart reconciles the derived files if an earlier write was interrupted. A milestone records a takeaway and next step, not mastery inferred from a click. Provider identity is reset when deliberately migrating to another adapter; portable learner state stays intact.
+
+Accepted mentor work is also durable in `session.json`. Dispatch and commit use a turn identity and revision to prevent duplicate publication or overwriting newer learner edits. A conflicting response becomes recoverable failed work; explicit retry uses fresh context. Execution records carry the exact submitted code and its hash, and cannot authorize submission of a later edit.
 
 ---
 

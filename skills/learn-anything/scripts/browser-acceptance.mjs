@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import { constructSession, kitRoot } from "./construct.mjs";
 import { createLearnAnythingServer } from "../blocks/server/server.mjs";
@@ -10,6 +10,25 @@ import { canvasEventValue, canvasFromStage } from "../blocks/a2ui/state.mjs";
 
 const checks = [];
 const record = (name) => checks.push(name);
+const screenshotDir = process.env.LEARN_ANYTHING_SCREENSHOT_DIR ? resolve(process.env.LEARN_ANYTHING_SCREENSHOT_DIR) : null;
+if (screenshotDir) {
+  const pathFromRepo = relative(resolve(kitRoot, "../.."), screenshotDir);
+  assert.ok(pathFromRepo === ".." || pathFromRepo.startsWith(`..${sep}`) || isAbsolute(pathFromRepo), "Screenshots must be saved outside the repository");
+}
+
+async function capture(browser, name) {
+  if (!screenshotDir) return;
+  await browser.evaluate(`Promise.all(document.getAnimations().filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().iterations)).map((animation) => animation.finished.catch(() => {})))`);
+  await mkdir(screenshotDir, { recursive: true });
+  const { data } = await browser.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+  await writeFile(join(screenshotDir, `${name}.png`), Buffer.from(data, "base64"));
+}
+
+async function keyboardActivate(browser, selector) {
+  await browser.evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
+  await browser.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
+  await browser.call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+}
 
 async function waitFor(check, label, timeout = 10_000) {
   const started = Date.now();
@@ -102,6 +121,22 @@ function renderCanvas(address, stage, mentorId) {
 function sessionComponent(session, componentId) {
   const surface = session.canvas?.surfaces?.[session.canvas.activeSurfaceId];
   return surface?.components?.[componentId] || null;
+}
+
+// Streaming/manual-canvas compatibility fixtures intentionally do not commit
+// atomic turns. Settle their durable work before the next independent scenario.
+async function settleCompatibilityWork(address, mentorId) {
+  for (const work of (await api(address, "/api/session")).mentorRecovery || []) {
+    if (work.status !== "failed") {
+      const item = await api(address, `/api/mentor/next?${new URLSearchParams({ mentorId })}`);
+      assert.equal(item.mentorTurn.id, work.turnId);
+      await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify({
+        type: "RUN_FINISHED", turnId: item.mentorTurn.id, baseRevision: item.mentorTurn.baseRevision,
+        outcome: { type: "success" },
+      }) }, mentorId);
+    }
+    await api(address, "/api/mentor/recovery", { method: "POST", body: JSON.stringify({ turnId: work.turnId, action: "dismiss" }) });
+  }
 }
 
 class ChromeHarness {
@@ -295,6 +330,155 @@ async function setComposer(browser, value, selector = ".mentor-pane textarea") {
   })()`);
 }
 
+async function verifyLearningRecovery(browser, address, mentorId) {
+  const surfaceId = "recovery-lesson";
+  const componentId = "recovery-code";
+  const originalCode = "setTimeout(() => console.log('original'), 700);";
+  const duringRunCode = "console.log('typed while running');";
+  const editedCode = "console.log('new learner draft');";
+  const questionDraft = "Keep this unsent question while recovering";
+  const continuation = { kind: "action", text: "Run the current code and inspect its output.", taskTitle: "Keep your work", targetComponentId: componentId, actionType: "run" };
+  const post = (path, body, asMentor = false) => api(address, path, { method: "POST", body: JSON.stringify(body) }, asMentor ? mentorId : null);
+  const next = () => api(address, `/api/mentor/next?${new URLSearchParams({ mentorId })}`);
+  const commit = (item) => ({ turnId: item.mentorTurn.id, baseRevision: item.mentorTurn.baseRevision, message: "Your draft is preserved. Run it when ready.", focus: "work", messages: [], continuation });
+  const progressSelector = ".stage-pane .learning-progress";
+  const recoverySelector = ".stage-pane .mentor-recovery";
+
+  await renderCanvas(address, { version: "learn-anything/v1", surfaceId, focus: "work", title: "Keep your work", continuation, components: [
+    { id: componentId, type: "code", language: "javascript", value: originalCode, runnable: true },
+  ] }, mentorId);
+  await assertView(browser, "work");
+  await waitForEditor(browser);
+  await browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.textContent.trim() === 'Run').click()");
+  await waitFor(() => browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).some((button) => button.textContent.trim() === 'Running…')"), "execution started");
+  await setEditor(browser, duringRunCode);
+  await waitFor(() => browser.evaluate("document.querySelector('.console-output')?.textContent.includes('original')"), "recovery fixture execution");
+  assert.equal(await browser.evaluate(editorValueExpression()), duringRunCode);
+  assert.equal(await browser.evaluate("document.querySelector('.submit-code').disabled"), true);
+  await waitFor(async () => sessionComponent(await api(address, "/api/session"), componentId)?.value === duringRunCode, "draft typed during run saved");
+  record("edit-during-execution-keeps-new-code-and-labels-old-output");
+  await post("/api/message", { text: "Explain this code without replacing my activity", source: "work", surfaceId, context: { componentId } });
+  const staleTurn = await next();
+  await setEditor(browser, editedCode);
+  await setComposer(browser, questionDraft, ".work-question-input");
+  await waitFor(async () => sessionComponent(await api(address, "/api/session"), componentId)?.value === editedCode, "concurrent draft saved before mentor commit");
+  await assert.rejects(post("/api/mentor/turn", commit(staleTurn), true), /409/);
+  await waitFor(() => browser.evaluate(`document.querySelector('${recoverySelector}')?.textContent.includes('Mentor response paused')`), "revision conflict offers recovery");
+  assert.equal(await browser.evaluate(editorValueExpression()), editedCode);
+  assert.equal(await browser.evaluate("document.querySelector('.work-question-input').value"), questionDraft);
+  assert.equal(await browser.evaluate("document.querySelector('.submit-code').disabled"), true);
+  assert.ok(await browser.evaluate("document.querySelector('.console-output').textContent.includes('original')"));
+  await capture(browser, "recovery-failed-desktop");
+  record("late-mentor-commit-preserves-newer-editor-output-and-question-draft");
+
+  await browser.call("Page.reload", { ignoreCache: true });
+  await waitFor(() => browser.evaluate(`Boolean(document.querySelector('${recoverySelector} button'))`), "failed recovery restored on refresh");
+  await assertView(browser, "work");
+  assert.equal(await browser.evaluate(editorValueExpression()), editedCode);
+  assert.equal(await browser.evaluate("document.querySelector('.work-question-input').value"), questionDraft);
+  await keyboardActivate(browser, `${recoverySelector} button:first-child`);
+  try {
+    await waitFor(async () => (await api(address, "/api/session")).mentorRecovery.some((item) => item.turnId === staleTurn.mentorTurn.id && item.status === "pending"), "keyboard retry queues original request");
+  } catch (error) {
+    const observed = await browser.evaluate("({ active: document.activeElement?.outerHTML, error: document.querySelector('.stage-pane .learning-status .send-error')?.textContent })");
+    throw new Error(`${error.message}; observed=${JSON.stringify(observed)}`);
+  }
+  const retried = await next();
+  assert.equal(retried.mentorTurn.id, staleTurn.mentorTurn.id);
+  assert.ok(retried.mentorTurn.baseRevision > staleTurn.mentorTurn.baseRevision);
+  await waitFor(() => browser.evaluate(`!document.querySelector('${recoverySelector} button')`), "active recovery has no retry/dismiss controls");
+  assert.equal(await browser.evaluate(editorValueExpression()), editedCode);
+  await capture(browser, "recovery-in-progress-desktop");
+  const milestone = { title: "Understand saved execution", takeaway: "Output describes the code that actually ran.", nextStep: "Run your revised example.", concepts: ["execution evidence"] };
+  const committed = { ...commit(retried), milestone };
+  await post("/api/mentor/turn", committed, true);
+  await post("/api/mentor/turn", committed, true);
+  await waitFor(() => browser.evaluate(`document.querySelector('${progressSelector} summary')?.textContent.includes('1 milestone')`), "committed milestone appears once");
+  await waitFor(() => browser.evaluate(`!document.querySelector('${recoverySelector}')`), "committed recovery removed");
+  await keyboardActivate(browser, `${progressSelector} summary`);
+  await waitFor(() => browser.evaluate(`document.querySelector('${progressSelector}').open`), "keyboard opens milestone details");
+  assert.equal(await browser.evaluate(`document.querySelectorAll('${progressSelector} li').length`), 1);
+  assert.ok(await browser.evaluate(`document.querySelector('${progressSelector}').textContent.includes(${JSON.stringify(milestone.takeaway)})`));
+  assert.equal(await browser.evaluate(editorValueExpression()), editedCode);
+  assert.equal(await browser.evaluate("document.querySelector('.work-question-input').value"), questionDraft);
+  await capture(browser, "progress-expanded-desktop");
+  record("keyboard-retry-preserves-drafts-and-commits-one-milestone");
+
+  await post("/api/message", { text: "A second mentor request", source: "work", surfaceId, context: { componentId } });
+  const failed = await next();
+  await post("/api/mentor/event", { type: "RUN_ERROR", turnId: failed.mentorTurn.id, baseRevision: failed.mentorTurn.baseRevision, message: "PRIVATE_PROVIDER_DIAGNOSTIC_DO_NOT_RENDER", code: "TEST_FAILURE" }, true);
+  await waitFor(() => browser.evaluate(`Boolean(document.querySelector('${recoverySelector} button'))`), "provider failure offers recovery");
+  assert.equal(await browser.evaluate("document.getElementById('root').textContent.includes('PRIVATE_PROVIDER_DIAGNOSTIC_DO_NOT_RENDER')"), false);
+  await browser.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await assertView(browser, "work", { mobile: true });
+  const headerFits = await browser.evaluate(`(() => {
+    const title = document.querySelector('.stage-header > div:first-child').getBoundingClientRect();
+    const controls = document.querySelector('.stage-header .header-actions').getBoundingClientRect();
+    const rescue = document.getElementById('mentor-rescue').getBoundingClientRect();
+    return title.bottom <= controls.top && controls.right <= innerWidth && controls.top >= rescue.bottom;
+  })()`);
+  assert.ok(headerFits, "mobile title, model picker, status, and rescue must not overlap");
+  await keyboardActivate(browser, `${progressSelector} summary`);
+  await capture(browser, "recovery-failed-mobile");
+  const mobileLayout = await browser.evaluate(`(() => {
+    const panel = document.querySelector('.stage-pane .learning-status');
+    const buttons = [...document.querySelectorAll('${recoverySelector} button')];
+    return { fits: panel.scrollWidth <= panel.clientWidth + 1, buttonsFit: buttons.every((button) => { const rect = button.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth && rect.height >= 44; }) };
+  })()`);
+  assert.deepEqual(mobileLayout, { fits: true, buttonsFit: true });
+  await keyboardActivate(browser, `${recoverySelector} button:last-child`);
+  await waitFor(() => browser.evaluate(`!document.querySelector('${recoverySelector}')`), "keyboard dismiss removes failed request");
+  assert.equal(await browser.evaluate(editorValueExpression()), editedCode);
+  assert.equal(await browser.evaluate("document.querySelector('.work-question-input').value"), questionDraft);
+  assert.equal(sessionComponent(await api(address, "/api/session"), componentId).value, editedCode);
+  await browser.call("Page.reload", { ignoreCache: true });
+  await waitFor(() => browser.evaluate(`document.querySelector('${progressSelector} summary')?.textContent.includes('1 milestone')`), "progress restored after refresh");
+  await assertView(browser, "work", { mobile: true });
+  assert.equal(await browser.evaluate(`Boolean(document.querySelector('${recoverySelector}'))`), false);
+  await keyboardActivate(browser, `${progressSelector} summary`);
+  await waitFor(() => browser.evaluate(`document.querySelector('${progressSelector}').open`), "mobile progress opens without focus moving to Run");
+  await capture(browser, "progress-expanded-mobile");
+  assert.equal(await browser.evaluate(editorValueExpression()), editedCode);
+  assert.equal(await browser.evaluate("document.querySelector('.work-question-input').value"), questionDraft);
+  assert.equal(await browser.evaluate("document.querySelector('.submit-code').disabled"), true);
+  assert.deepEqual(browser.exceptions, []);
+  record("mobile-keyboard-dismiss-and-refresh-preserve-progress-activity-and-drafts");
+  await keyboardActivate(browser, `${progressSelector} summary`);
+
+  await renderCanvas(address, {
+    version: "learn-anything/v1", surfaceId: "acting-practice", focus: "work", title: "Listen before responding",
+    continuation: { kind: "action", text: "Read the passage aloud and notice where you pause.", taskTitle: "Listen before responding", targetComponentId: "acting-passage", actionType: "inspect" },
+    components: [
+      { id: "acting-passage", type: "passage", text: "I thought you would come back. I left the light on.", source: "Practice scene", annotations: [{ quote: "the light", note: "Choose what this detail means to the speaker." }] },
+      { id: "acting-figure", type: "figure", mermaid: "flowchart TD\nA[Listen] --> B[Pause]\nB --> C[Respond]", caption: "Try the same line with a different intention." },
+      { id: "acting-checklist", type: "checklist", items: [{ id: "practiced", label: "I tried two different intentions aloud", done: false }] },
+    ],
+  }, mentorId);
+  await assertView(browser, "work", { mobile: true });
+  await waitFor(() => browser.evaluate("Boolean(document.querySelector('.figure-surface svg'))"), "mobile subject-native figure");
+  assert.equal(await browser.evaluate("Boolean(document.querySelector('.code-fallback, .console-output'))"), false);
+  for (const [name, selector] of [["passage", ".passage-surface"], ["figure", ".figure-surface"], ["checklist", ".checklist-list"]]) {
+    await browser.evaluate(`document.querySelector('${selector}').scrollIntoView({ block: 'center' })`);
+    const readable = await browser.evaluate(`(() => { const node = document.querySelector('${selector}'); const rect = node.getBoundingClientRect(); return rect.width > 200 && rect.left >= 0 && rect.right <= innerWidth && node.scrollWidth <= node.clientWidth + 1; })()`);
+    assert.ok(readable, `mobile ${name} fits and stays readable`);
+    await capture(browser, `subject-native-${name}-mobile`);
+  }
+  await browser.evaluate("document.querySelector('.checklist-list input').click()");
+  await waitFor(async () => sessionComponent(await api(address, "/api/session"), "acting-checklist")?.items[0].done, "reported acting practice persisted");
+  assert.equal((await api(address, "/api/session")).progress.milestone, 1, "a checkbox must not infer a learning milestone");
+  const actingTurn = await next();
+  await post("/api/mentor/event", { type: "RUN_ERROR", turnId: actingTurn.mentorTurn.id, baseRevision: actingTurn.mentorTurn.baseRevision, message: "Practice feedback paused", code: "TEST_FAILURE" }, true);
+  await waitFor(() => browser.evaluate(`Boolean(document.querySelector('${recoverySelector} button'))`), "non-code feedback recovery");
+  await keyboardActivate(browser, `${recoverySelector} button:last-child`);
+  await waitFor(() => browser.evaluate(`!document.querySelector('${recoverySelector}')`), "non-code feedback dismissed");
+  assert.equal(await browser.evaluate("document.querySelector('.work-mentor-reply')?.textContent.includes('Waiting…')"), false, "dismissed requests must not appear to be still running");
+  assert.equal(await browser.evaluate("document.querySelector('.checklist-list input').checked"), true);
+  assert.equal(await browser.evaluate("document.querySelector('.work-question-input').value"), questionDraft);
+  await capture(browser, "subject-native-recovery-dismissed-mobile");
+  record("subject-native-mobile-passage-figure-checklist-and-recovery-without-code");
+  await browser.call("Emulation.clearDeviceMetricsOverride");
+}
+
 const temp = await mkdtemp(join(tmpdir(), "learn-anything-browser-acceptance-"));
 const profile = await mkdtemp(join(tmpdir(), "learn-anything-browser-profile-"));
 let runtime;
@@ -418,7 +602,7 @@ try {
   const firstRequest = "Teach me Rust from scratch";
   await setComposer(browser, firstRequest);
   await browser.evaluate("document.querySelector('.mentor-pane form button[type=submit]').click()");
-  await waitFor(() => browser.evaluate("document.querySelector('[role=status]').innerText.includes('Thinking about your question')"), "waiting mentor status");
+  await waitFor(() => browser.evaluate("document.querySelector('.mentor-pane .mentor-presence').innerText.includes('Thinking about your question')"), "waiting mentor status");
   const delivered = await mentorPoll;
   assert.equal(delivered.response.status, 200);
   assert.equal(delivered.body.message.content, firstRequest);
@@ -442,7 +626,7 @@ try {
     method: "POST",
     body: JSON.stringify({ type: "TEXT_MESSAGE_START", messageId: replyId, role: "assistant" }),
   }, mentorId);
-  await waitFor(() => browser.evaluate("document.querySelector('[role=status]').innerText.includes('Writing a response')"), "responding mentor status");
+  await waitFor(() => browser.evaluate("document.querySelector('.mentor-pane .mentor-presence').innerText.includes('Writing a response')"), "responding mentor status");
   for (const delta of ["We will start with a tiny Rust program. ", "I will explain each line before you change it."]) {
     await api(address, "/api/mentor/event", {
       method: "POST",
@@ -453,10 +637,11 @@ try {
     method: "POST",
     body: JSON.stringify({ type: "TEXT_MESSAGE_END", messageId: replyId }),
   }, mentorId);
-  await waitFor(() => browser.evaluate("document.querySelector('[role=status]').innerText.trim() === ''"), "idle mentor status");
+  await waitFor(() => browser.evaluate("document.querySelector('.mentor-pane .mentor-presence').innerText.trim() === ''"), "idle mentor status");
   assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('explain each line')"));
   record("send-button-to-mentor-to-streamed-reply");
   record("waiting-responding-idle-status");
+  await settleCompatibilityWork(address, mentorId);
 
   const explanatory = {
     version: "learn-anything/v1",
@@ -600,7 +785,7 @@ try {
   await assertView(browser, "work");
   const editorKind = await waitForEditor(browser);
   assert.equal(await browser.evaluate("Boolean(document.querySelector('.console-output'))"), false);
-  assert.ok(await browser.evaluate("document.querySelector('.mentor-pane').innerText.includes('Local runner')"));
+  assert.ok(await browser.evaluate("document.querySelector('.stage-pane').innerText.includes('Local runner')"));
   assert.equal(await browser.evaluate("getComputedStyle(document.querySelector('.editor-shell')).opacity"), "1");
   record("agent-work-visible");
   record(`code-editor-${editorKind}`);
@@ -637,6 +822,7 @@ try {
   await waitFor(() => browser.evaluate("document.querySelector('[data-component-id=\"browser-code\"] .anchored-mentor-note')?.innerText.includes('This note belongs to the code block') === true"), "component-anchored mentor reply");
   record("work-surface-context-question");
   record("component-anchored-mentor-reply");
+  await settleCompatibilityWork(address, mentorId);
 
   await browser.evaluate(`(() => {
     const host = document.querySelector('[data-component-id="task"]');
@@ -704,11 +890,24 @@ try {
 
   const secondCode = "console.log('browser-run-again');";
   await setEditor(browser, secondCode);
+  await waitFor(() => browser.evaluate("document.querySelector('.submit-code').disabled"), "edit invalidates previous run");
+  await browser.call("Page.reload", { ignoreCache: true });
+  await waitForEditor(browser);
+  await waitFor(() => browser.evaluate(`(${editorValueExpression()}) === ${JSON.stringify(secondCode)}`), "edited code restored after run A");
+  assert.equal(await browser.evaluate("document.querySelector('.submit-code').disabled"), true);
+  assert.ok(await browser.evaluate("document.querySelector('.stale-result')?.textContent.includes('Earlier output')"));
+  await assert.rejects(api(address, "/api/action", { method: "POST", body: JSON.stringify({ action: "submit_code", componentId: "browser-code", code: secondCode }) }), /40[09]/);
+  await capture(browser, "code-edited-after-refresh");
+  record("run-A-edit-B-refresh-rejects-unrun-submission");
   await browser.evaluate("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.textContent.trim() === 'Run').click()");
   await waitFor(() => browser.evaluate("document.querySelector('.console-output').innerText.includes('browser-run-again')"), "second browser execution output");
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(mentorReceivedRun, false);
   await waitFor(() => browser.evaluate("!document.querySelector('.submit-code').disabled"), "submit-to-mentor action after latest run");
+  await browser.call("Page.reload", { ignoreCache: true });
+  await waitForEditor(browser);
+  await waitFor(() => browser.evaluate("!document.querySelector('.submit-code').disabled"), "exact execution evidence restored after refresh");
+  assert.equal(await browser.evaluate(editorValueExpression()), secondCode);
   await browser.evaluate("document.querySelector('.submit-code').click()");
   const submittedRun = await submissionPoll;
   assert.equal(submittedRun.response.status, 200);
@@ -716,8 +915,10 @@ try {
   assert.equal(submittedRun.body.submitted, true);
   assert.equal(submittedRun.body.code, secondCode);
   assert.equal(submittedRun.body.result.stdout, "browser-run-again\n");
+  assert.equal(submittedRun.body.result.executedCode, secondCode);
   await api(address, "/api/mentor/event", { method: "POST", body: JSON.stringify({ type: "RUN_FINISHED", threadId: "browser-acceptance", runId: "submitted-code", outcome: { type: "success" } }) }, mentorId);
   record("repeated-runs-stay-local-until-explicit-submission");
+  await settleCompatibilityWork(address, mentorId);
   record("run-output-visible");
   await setEditor(browser, code);
   await new Promise((resolve) => setTimeout(resolve, 650));
@@ -808,6 +1009,7 @@ try {
   await assertView(browser, "work");
   record("same-surface-work-resumes-after-rescue-reply");
   record("work-restore-survives-canvas-before-reply-end");
+  await settleCompatibilityWork(address, mentorId);
 
   await browser.evaluate("document.getElementById('mentor-rescue').click()");
   await assertView(browser, "chat", { rescued: true });
@@ -861,6 +1063,7 @@ try {
   await waitFor(() => browser.evaluate("document.querySelector('.stage-pane input[type=checkbox]').checked"), "visible checked state");
   record("quiz-choice-click-and-persistence");
   record("checklist-click-and-persistence");
+  await settleCompatibilityWork(address, mentorId);
 
   const subjectNativeStage = {
     version: "learn-anything/v1",
@@ -1159,7 +1362,26 @@ try {
   assert.equal(await browser.evaluate("document.querySelector('.connection-issue').innerText.includes('reconnecting')"), false);
   record("stale-session-shows-explicit-recovery");
 
-  process.stdout.write(`${JSON.stringify({ ok: true, checks, editorKind }, null, 2)}\n`);
+  // Isolate durable-work scenarios from compatibility-path fixtures above.
+  await browser.stop();
+  browser = null;
+  await runtime.close();
+  listening = false;
+  const recoverySession = await constructSession({ topic: "Recovery acceptance", root: join(temp, "recovery"), profile: "pi-cli", env: {} });
+  runtime = await createLearnAnythingServer({ sessionDir: recoverySession.sessionDir, kitRoot, port: 0, modelCatalogLoader: async () => ({ models: [] }) });
+  const recoveryAddress = await runtime.listen();
+  listening = true;
+  await api(recoveryAddress, "/api/mentor/register", { method: "POST", body: JSON.stringify({ mentorId, takeover: true }) });
+  await api(recoveryAddress, "/api/mentor/ready", { method: "POST", body: "{}" }, mentorId);
+  browser = new ChromeHarness(await browserBinary(), join(profile, "recovery"), recoveryAddress.launchUrl);
+  await browser.start();
+  await browser.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+  await verifyLearningRecovery(browser, recoveryAddress, mentorId);
+
+  process.stdout.write(`${JSON.stringify({ ok: true, checks, editorKind, screenshotDir }, null, 2)}\n`);
+} catch (error) {
+  if (browser) await capture(browser, "acceptance-failure").catch(() => {});
+  throw error;
 } finally {
   await browser?.stop();
   if (runtime && listening) await runtime.close();

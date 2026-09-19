@@ -23,7 +23,7 @@ test("JavaScript runner executes fixed command without shell", async () => {
   }
 });
 
-test("Java runner compiles and executes the learner's public class", async () => {
+test("Java runner compiles and executes the learner's public class", { skip: !availableRunners().java && "Java toolchain unavailable or unusable" }, async () => {
   const workDir = await mkdtemp(join(tmpdir(), "learn-anything-java-runner-"));
   try {
     const result = await runCode({

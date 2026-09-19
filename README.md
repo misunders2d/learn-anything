@@ -1,6 +1,6 @@
 # Learn Anything
 
-Learn Anything turns a topic, repository, or build goal into a local browser-based learning workspace. Lessons can mix explanation, chat, code, diagrams, exercises, and runnable examples. Progress stays on your machine, and an interrupted session can be resumed later.
+Learn Anything turns a topic, practical skill, repository, or build goal into a local browser-based learning workspace. Lessons can mix explanation, chat, passages, diagrams, software practice, rehearsal, code, and exercises. Code execution is optional. Progress stays on your machine, and an interrupted session can be resumed later.
 
 The package is built for coding agents rather than tied to one fixed course or interface. It checks the available tools, chooses a compatible setup, and assembles only the pieces needed for the lesson.
 
@@ -65,7 +65,19 @@ Help me understand this repository, then guide me through adding a feature.
 Teach me SQL joins with examples I can run in the browser.
 ```
 
+```text
+Teach me architectural circulation by comparing two small library layouts.
+```
+
+```text
+Help me practice acting objectives using a short original scene and reflection.
+```
+
+For activities outside the browser, the mentor guides practice and responds to the learner's report. It does not claim to observe another app, voice, or movement without actual observation tools and supplied evidence.
+
 The agent creates a workspace under `.learnings/` for project work or `~/learnings/` for a general topic. It launches the browser, keeps lesson state on disk, and resumes the same workspace when you return.
+
+Course preparation and lesson interaction use separate agent sessions. Keep the constructor on a capable model to prepare `references/course-brief.md` inside the course directory; the runner receives that plan and adapts the lesson through A2UI. Select a faster runner model in the browser's **Mentor model** picker without changing the constructor's model or global Pi settings.
 
 ## Command line
 
@@ -103,7 +115,11 @@ After a package update or deliberate adapter change, `create` may require an exp
 learn-anything create "Rust lifetimes" --root /path/to/project --profile <profile-id> --execution <host|container> --migrate
 ```
 
-Migration preserves the transcript, canvas, exercises, and progress, writes a versioned `session.json` backup, rebuilds the versioned assembly manifest, and marks the composition for revalidation before launch.
+Migration preserves the transcript, canvas, exercises, and progress, writes a versioned `session.json` backup, rebuilds the versioned assembly manifest, and marks the composition for revalidation before launch. Switching adapters resets the provider-owned session identity and model selection; the new mentor bootstraps from the saved learning context.
+
+Accepted learner questions survive server restarts. Failed mentor turns appear with **Retry** and **Dismiss** controls; retry uses the current lesson state while preserving your draft. Execution results belong to the exact code that ran, so edited code must run again before submission. Mentor-recorded milestones appear in the browser and persist across adapters, with recoverable `notes.md` and `journal.md` summaries.
+
+The mentor authors and reshapes the lesson through A2UI as learning progresses. Rendering primitives support new compositions rather than fixed lesson templates. Useful generic compositions can be nominated by the mentor and saved automatically to a local pattern library for later adaptation. Storage defaults to `~/.local/share/learn-anything/patterns` (respects `XDG_DATA_HOME`); `LEARN_ANYTHING_LIBRARY_DIR` overrides it. Patterns contain validated A2UI data, not captured transcripts or execution results, and do not modify the installed skill. New executable renderer components still require implementation and validation.
 
 ## What is included
 
@@ -126,7 +142,7 @@ Review package source before installation. Pi and Oh My Pi packages run with the
 
 ## Current limits
 
-The package includes native Pi, Claude, Codex, and explicit manual-shell adapters. Pi RPC mode keeps browser submissions active without requiring a terminal nudge, preserves one dedicated mentor session per course, and lets the learner choose any available authenticated Pi model in the browser without changing the frontier constructor agent. Pi mentor answers arrive through one schema-validated terminating tool; the host converts typed surface plans to A2UI and atomically commits text, focus, canvas, continuation, and completion. Other agents integrate through the same mentor HTTP/runtime contract and capability metadata; unsupported environments stop before opening an unstaffed browser. Host and container execution blocks are available, but neither Docker nor Podman is required. Voice runtimes and a native adapter for every other harness are not included yet.
+The package includes native Pi, Claude, Codex, and explicit manual-shell adapters. Pi RPC mode keeps browser submissions active without requiring a terminal nudge, preserves one dedicated mentor session per course, and lets the learner choose any available authenticated Pi model in the browser without changing the frontier constructor agent. Pi mentor answers arrive through one schema-validated terminating tool. All persistent adapters publish complete validated turns atomically: text, focus, canvas, continuation, milestones, and completion. Responses appear after the turn completes. Other agents integrate through the same mentor HTTP/runtime contract and capability metadata; unsupported environments stop before opening an unstaffed browser. The manual-shell profile must be selected explicitly and needs an operator to service browser requests. Host and container execution blocks are available, but neither Docker nor Podman is required. Voice runtimes and a native adapter for every other harness are not included yet.
 
 ## Development
 

@@ -11,6 +11,8 @@ const surfaceOperation = Type.Object({
   value: Type.Optional(Type.Unknown()),
 }, { additionalProperties: false });
 
+const surfacePlan = Type.Object({ operations: Type.Array(surfaceOperation, { maxItems: 100 }) }, { additionalProperties: false });
+
 const completeMentorTurn = defineTool({
   name: "complete_mentor_turn",
   label: "Complete mentor turn",
@@ -35,9 +37,20 @@ const completeMentorTurn = defineTool({
     }, { additionalProperties: false }),
     target_component_id: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
     target_quote: Type.Optional(Type.String({ minLength: 1, maxLength: 2_000 })),
-    surface_plan: Type.Optional(Type.Object({
-      operations: Type.Array(surfaceOperation, { maxItems: 100 }),
+    milestone: Type.Optional(Type.Object({
+      title: Type.String({ minLength: 1, maxLength: 200 }),
+      takeaway: Type.String({ minLength: 1, maxLength: 4000 }),
+      nextStep: Type.String({ minLength: 1, maxLength: 1000 }),
+      concepts: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 30 })),
+      misconceptions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 30 })),
     }, { additionalProperties: false })),
+    pattern: Type.Optional(Type.Object({
+      title: Type.String({ minLength: 1, maxLength: 120 }),
+      description: Type.String({ minLength: 1, maxLength: 1000 }),
+      tags: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 40 }), { maxItems: 12 })),
+      surface_plan: surfacePlan,
+    }, { additionalProperties: false })),
+    surface_plan: Type.Optional(surfacePlan),
   }, { additionalProperties: false }),
   constrainedSampling: { type: "json_schema", strict: "prefer" as const },
 

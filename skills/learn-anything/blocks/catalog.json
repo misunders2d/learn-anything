@@ -3,85 +3,177 @@
   "blocks": [
     {
       "id": "server.node-sse",
-      "version": 4,
+      "version": 5,
       "kind": "server",
       "path": "blocks/server/server.mjs",
-      "requires": ["node>=20"],
-      "provides": ["http-server", "sse-events", "message-queue", "state-persistence", "a2ui-api"],
+      "requires": [
+        "node>=20"
+      ],
+      "provides": [
+        "http-server",
+        "sse-events",
+        "message-queue",
+        "state-persistence",
+        "a2ui-api",
+        "durable-mentor-work",
+        "atomic-mentor-turns",
+        "portable-milestones",
+        "local-teaching-pattern-library"
+      ],
       "smokeCheck": "node bin/learn-anything.mjs smoke --session <session-dir>"
     },
     {
       "id": "web.a2ui-canvas",
-      "version": 4,
+      "version": 5,
       "kind": "frontend",
       "path": "blocks/web/dist",
-      "requires": ["built-web-assets"],
-      "provides": ["mentor-stream", "a2ui-v0.9-canvas", "subject-editor", "structured-table", "annotated-passage", "figure", "math-notation", "structured-plot", "reactive-parameter-frames", "parameter-controls", "quiz-actions", "diagram-rendering"],
+      "requires": [
+        "built-web-assets"
+      ],
+      "provides": [
+        "mentor-stream",
+        "a2ui-v0.9-canvas",
+        "subject-editor",
+        "structured-table",
+        "annotated-passage",
+        "figure",
+        "math-notation",
+        "structured-plot",
+        "reactive-parameter-frames",
+        "parameter-controls",
+        "quiz-actions",
+        "diagram-rendering",
+        "mentor-recovery",
+        "milestone-history"
+      ],
       "smokeCheck": "GET / and GET /app.js return 200"
     },
     {
       "id": "adapter.claude-agent-sdk",
-      "version": 2,
+      "version": 3,
       "kind": "mentor-adapter",
       "path": "blocks/adapters/claude-agent-sdk/adapter.mjs",
-      "requires": ["claude-agent-sdk-auth", "node>=20"],
-      "provides": ["persistent-mentor", "token-streaming", "session-resume", "canvas-tool", "milestone-tool"],
+      "requires": [
+        "claude-agent-sdk-auth",
+        "node>=20"
+      ],
+      "provides": [
+        "persistent-mentor",
+        "session-resume",
+        "canvas-tool",
+        "milestone-tool"
+      ],
       "runtime": {
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "runtime": "node",
         "entry": "blocks/adapters/claude-agent-sdk/adapter.mjs",
         "persistent": true,
-        "capabilities": { "streaming": true, "interrupt": "process", "resume": true }
+        "capabilities": {
+          "streaming": false,
+          "interrupt": "process",
+          "resume": true,
+          "structuredTurns": true,
+          "atomicCommit": true
+        }
       },
-      "smokeCheck": "event mapper tests plus authenticated launch check"
+      "smokeCheck": "event mapper tests plus authenticated launch check",
+      "degraded": [
+        "turn-complete-output"
+      ]
     },
     {
       "id": "adapter.shell-long-poll",
-      "version": 1,
+      "version": 2,
       "kind": "mentor-adapter",
       "path": "scripts/mentor.mjs",
-      "requires": ["shell", "node>=20"],
-      "provides": ["browser-to-agent-messages", "agent-to-browser-events", "canvas-updates"],
+      "requires": [
+        "shell",
+        "node>=20"
+      ],
+      "provides": [
+        "browser-to-agent-messages",
+        "agent-to-browser-events",
+        "canvas-updates",
+        "atomic-mentor-turns"
+      ],
       "runtime": {
         "protocolVersion": 1,
         "persistent": false,
-        "capabilities": { "streaming": false, "interrupt": "none", "resume": false }
+        "capabilities": {
+          "streaming": false,
+          "interrupt": "none",
+          "resume": false
+        }
       },
-      "degraded": ["no-token-streaming-guarantee", "agent-turn-long-poll"],
-      "smokeCheck": "message round trip through /api/mentor/next and /api/mentor/event"
+      "degraded": [
+        "no-token-streaming-guarantee",
+        "agent-turn-long-poll"
+      ],
+      "smokeCheck": "manual next/turn round trip completes one durable learner request"
     },
     {
       "id": "adapter.codex-cli",
-      "version": 2,
+      "version": 3,
       "kind": "mentor-adapter",
       "path": "blocks/adapters/codex-cli/adapter.mjs",
-      "requires": ["codex-cli-auth", "node>=20"],
-      "provides": ["persistent-mentor", "session-resume", "canvas-updates"],
+      "requires": [
+        "codex-cli-auth",
+        "node>=20"
+      ],
+      "provides": [
+        "persistent-mentor",
+        "session-resume",
+        "canvas-updates"
+      ],
       "runtime": {
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "runtime": "node",
         "entry": "blocks/adapters/codex-cli/adapter.mjs",
         "persistent": true,
-        "capabilities": { "streaming": false, "interrupt": "process", "resume": true }
+        "capabilities": {
+          "streaming": false,
+          "interrupt": "process",
+          "resume": true,
+          "structuredTurns": true,
+          "atomicCommit": true
+        }
       },
-      "degraded": ["turn-complete-output"],
+      "degraded": [
+        "turn-complete-output"
+      ],
       "smokeCheck": "real browser message reaches codex exec and returns mentor text"
     },
     {
       "id": "adapter.pi-cli",
-      "version": 5,
+      "version": 6,
       "kind": "mentor-adapter",
       "path": "blocks/adapters/pi-cli/adapter.mjs",
-      "requires": ["pi-cli-auth", "node>=20"],
-      "provides": ["persistent-mentor", "session-resume", "per-course-model-selection", "canvas-updates"],
+      "requires": [
+        "pi-cli-auth",
+        "node>=20"
+      ],
+      "provides": [
+        "persistent-mentor",
+        "session-resume",
+        "per-course-model-selection",
+        "canvas-updates"
+      ],
       "runtime": {
         "protocolVersion": 2,
         "runtime": "node",
         "entry": "blocks/adapters/pi-cli/adapter.mjs",
         "persistent": true,
-        "capabilities": { "streaming": false, "interrupt": "rpc", "resume": true, "structuredTurns": true, "atomicCommit": true }
+        "capabilities": {
+          "streaming": false,
+          "interrupt": "rpc",
+          "resume": true,
+          "structuredTurns": true,
+          "atomicCommit": true
+        }
       },
-      "degraded": ["turn-complete-output"],
+      "degraded": [
+        "turn-complete-output"
+      ],
       "smokeCheck": "real browser message reaches persistent Pi RPC, completes the typed mentor tool, and commits one browser turn"
     },
     {
@@ -89,18 +181,35 @@
       "version": 1,
       "kind": "execution",
       "path": "blocks/execution/container-runner.mjs",
-      "requires": ["docker-or-podman"],
-      "provides": ["code-run", "network-isolation", "read-only-root", "bounded-resources", "process-containment"],
+      "requires": [
+        "docker-or-podman"
+      ],
+      "provides": [
+        "code-run",
+        "network-isolation",
+        "read-only-root",
+        "bounded-resources",
+        "process-containment"
+      ],
       "smokeCheck": "run a fixed JavaScript probe in a bounded per-session container"
     },
     {
       "id": "execution.host-fixed-runners",
-      "version": 1,
+      "version": 2,
       "kind": "execution",
       "path": "blocks/execution/host-runner.mjs",
-      "requires": ["one-supported-toolchain"],
-      "provides": ["code-run", "stdout", "stderr", "exit-code"],
-      "degraded": ["host-execution-full-user-permissions"],
+      "requires": [
+        "one-supported-toolchain"
+      ],
+      "provides": [
+        "code-run",
+        "stdout",
+        "stderr",
+        "exit-code"
+      ],
+      "degraded": [
+        "host-execution-full-user-permissions"
+      ],
       "smokeCheck": "run JavaScript probe in session exercises directory"
     },
     {
@@ -108,9 +217,17 @@
       "version": 1,
       "kind": "execution",
       "path": "blocks/execution/sqlite-runner.mjs",
-      "requires": ["python3-with-sqlite"],
-      "provides": ["run:sql", "hidden-fixtures", "structured-table-results"],
-      "degraded": ["host-execution-full-user-permissions"],
+      "requires": [
+        "python3-with-sqlite"
+      ],
+      "provides": [
+        "run:sql",
+        "hidden-fixtures",
+        "structured-table-results"
+      ],
+      "degraded": [
+        "host-execution-full-user-permissions"
+      ],
       "smokeCheck": "run a pure SQL query against an in-memory seeded fixture"
     }
   ]

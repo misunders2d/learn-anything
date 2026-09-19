@@ -2,9 +2,9 @@
 
 ## Start from outcome
 
-Ask what learner wants to understand or build. Convert large goal into demonstrable milestones. Keep milestone sequence revisable as learner performance reveals gaps.
+Ask what learner wants to understand, create, or perform. Convert large goals into demonstrable milestones. Keep the sequence revisable as learner performance reveals gaps.
 
-Open in learner language with one concrete artifact map. Establish what is being built, what ships, and what gets generated before introducing implementation machinery. For constructor-style skills, do not begin with profiles, adapters, transports, sandbox tiers, or capability detection; those belong after the learner can distinguish the skill kit, one selected composition, and the generated workspace.
+Open in the learner's language with one concrete outcome and a small example. An outcome may be a working artifact, an interpretation, a design decision, or a practiced performance. Keep profiles, adapters, transports, and sandbox choices backstage unless they are the topic.
 
 Assume no prerequisite knowledge until the conversation demonstrates it. Calibrate from the learner's words, questions, predictions, and attempts rather than asking them to choose a level or presenting an opening test. A novice should receive plain-language explanations, a worked example, and one small guided change with the expected result visible. An experienced learner should receive a compressed model and can move directly into authentic implementation. Recalibrate continuously in either direction.
 
@@ -12,7 +12,7 @@ Match medium to subject. For humanities and conceptual science, begin with one c
 
 ## Teach just in time
 
-Introduce concept immediately before it is needed. Connect explanation to learner code or inspected project. Prefer one useful visual or exercise over broad lecture.
+Introduce concepts immediately before they are needed. Connect explanation to the learner's artifact, observation, or attempt. Prefer one useful visual or exercise over a broad lecture.
 
 A coding activity must teach, not merely score. Before showing an editor, explain what the code does, why the learner is changing it, the single change to make, and what success will look like. Do not open with an unexplained function, test harness, TODO, or raw stack trace. When execution fails, translate the result into guidance at the learner's demonstrated level before asking for another attempt.
 
@@ -62,4 +62,14 @@ Keep feedback adjacent to its cause. Query results sit below the query, compiler
 
 ## Persist milestones
 
-Update `journal.md` chronologically. Update `notes.md` with durable mental models, decisions, and next milestone. Preserve unfinished exercise state.
+Submit demonstrated progress as a milestone in the atomic mentor turn; the host owns durable history and derived `journal.md` and `notes.md`. Preserve unfinished activity state. Follow `mentor-recovery.md` for the payload and recovery behavior.
+
+## Software and offline practice
+
+Choose the medium for the outcome, not for the presence of a code runner:
+
+- **Other software:** show one concrete operation and expected visible result. If the app is outside this workspace, have the learner perform it there and report the result through the composer. Use a checklist only for otherwise unobservable steps. Do not claim to have clicked or inspected another app without tool evidence. Verify version-specific controls before giving exact menu paths.
+- **Architecture:** use a bounded conceptual brief, circulation or adjacency diagrams, comparisons, and a critique of the learner's reasoning. Label schematic models and assumptions; do not present a teaching sketch as a verified construction plan or code-compliance assessment.
+- **Acting:** use a short original passage, objective and obstacle, a safe rehearsal prompt, and reflection comparing two interpretations. Without supplied audio/video and a working observation tool, feedback addresses the written interpretation or learner report; never pretend to hear voice, see movement, or assess performance.
+
+For physical or external activities, keep the instruction visible, let the learner pause, and resume from their report. Distinguish browser-observed evidence, learner-reported practice, and unobserved outcomes in feedback and milestones. A completed checklist means the learner reported the step, not that the skill is mastered. Use chat for open-ended reflection rather than fabricating a quiz with one correct artistic answer.

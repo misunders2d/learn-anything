@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
+import { usableCommand } from "../blocks/execution/availability.mjs";
 
 const piCliFeatureCache = new Map();
 
@@ -8,6 +9,8 @@ export function commandPath(command, platform = process.platform) {
   const result = spawnSync(locator, [command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1_500,
+    killSignal: "SIGKILL",
   });
   if (result.status !== 0) return null;
   return result.stdout.trim().split(/\r?\n/, 1)[0] || null;
@@ -53,11 +56,16 @@ export function probeCapabilities({
   platform = process.platform,
   resolveCommand = commandPath,
   inspectPi = inspectPiCli,
+  inspectRuntime = usableCommand,
 } = {}) {
   const commands = Object.fromEntries(
     ["node", "npm", "pi", "claude", "codex", "docker", "podman", "python3", "python", "py", "java", "javac", "cargo", "rustc", "cc", "gcc", "clang"]
       .map((command) => [command, resolveCommand(command, platform)]),
   );
+  const unusable = [];
+  for (const name of ["node", "python3", "python", "py", "java", "javac", "cargo", "rustc", "cc", "gcc", "clang"]) {
+    if (commands[name] && !inspectRuntime(commands[name])) { unusable.push(name); commands[name] = null; }
+  }
   const containerRuntime = commands.docker ? "docker" : commands.podman ? "podman" : null;
   const opener = browserOpener(platform, resolveCommand);
   const pi = inspectPi(commands.pi);
@@ -70,7 +78,7 @@ export function probeCapabilities({
     c: Boolean(commands.cc || commands.gcc || commands.clang),
   };
 
-  const warnings = [];
+  const warnings = unusable.map((name) => `Detected ${name} is not usable; its bounded version probe failed.`);
   if (!opener) warnings.push("No browser opener detected; launch will print URL instead of opening it.");
   if (!Object.values(languages).some(Boolean)) warnings.push("No supported code runner detected.");
   if (commands.pi && !pi.persistentMentor) warnings.push("Installed Pi lacks persistent RPC mentor, typed tool, or per-course model selection support; update Pi before selecting the pi-cli profile.");

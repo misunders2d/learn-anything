@@ -52,6 +52,10 @@ if (command === "next") {
     if (!response.ok) throw new Error(`${response.status}: ${body.error || response.statusText}`);
     process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
   }
+} else if (command === "turn") {
+  const payload = JSON.parse(await loadValue(args, "--json"));
+  const result = await post(url, "/api/mentor/turn", payload, token, mentorId);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
 } else if (command === "text") {
   const text = await loadValue(args);
   const messageId = randomUUID();
@@ -75,5 +79,5 @@ if (command === "next") {
   const result = await post(url, "/api/mentor/event", event, token, mentorId);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } else {
-  throw new Error("Usage: mentor.mjs <next|text|canvas|event> --url <server-url> --token <token> --mentor-id <id> [--takeover] [--file path|--text value|--json value]");
+  throw new Error("Usage: mentor.mjs <next|turn|text|canvas|event> --url <server-url> --token <token> --mentor-id <id> [--takeover] [--file path|--text value|--json value]");
 }

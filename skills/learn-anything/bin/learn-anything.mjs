@@ -135,7 +135,7 @@ async function main() {
       if (mentorDescriptor) {
         supervisor = new MentorSupervisor({
           spawnAdapter: () => spawnMentor(mentorDescriptor, sessionDir, address.url),
-          waitUntilReady: () => runtime.waitForMentor(30_000),
+          waitUntilReady: () => runtime.waitForMentor(45_000),
           onUnavailable: (reason) => runtime.markMentorUnavailable(reason),
         });
         runtime.setInterruptHandler(() => supervisor.interrupt());

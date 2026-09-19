@@ -126,9 +126,8 @@ export async function constructSession({
   if (!capabilities.commands.node || nodeMajor < 20) throw new Error("Node.js 20 or newer is required by bundled server block.");
 
   const [profiles, catalog] = await Promise.all([loadProfiles(kitRoot), loadBlockCatalog(kitRoot)]);
-  const automaticallySelected = selectProfile(profiles, capabilities);
   const requestedProfile = profile === "auto"
-    ? automaticallySelected
+    ? selectProfile(profiles, capabilities)
     : profiles.find((candidate) => candidate.id === profile);
   if (!requestedProfile) throw new Error(`Unknown profile: ${profile}`);
   if (profile !== "auto") assertProfileCompatibility(requestedProfile, capabilities);
@@ -164,6 +163,13 @@ export async function constructSession({
       await writeMigrationBackup(sessionPath, previousVersion, session);
       if (!session.canvas) session.canvas = canvasFromStage(session.stage, session.topic);
       delete session.stage;
+      const previousAdapter = (session.assembly?.blocks || []).find((id) => id.startsWith("adapter."));
+      const nextAdapter = targetProfile.blocks.find((id) => id.startsWith("adapter."));
+      if (previousAdapter !== nextAdapter) {
+        session.agentSessionId = targetProfile.id === "pi-cli" ? randomUUID() : null;
+        session.mentorModel = null;
+        session.mentorSessionInitialized = false;
+      }
       session.schemaVersion = SESSION_SCHEMA_VERSION;
       session.assembly = buildAssembly(targetProfile, capabilities, catalog, selectedExecution);
       await atomicJson(sessionPath, session);

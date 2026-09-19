@@ -1,6 +1,6 @@
 # Shell mentor bridge
 
-Use this when harness has shell tools but no supported persistent streaming adapter.
+Use this only for explicitly selected manual operation when a harness has shell tools but no supported persistent adapter. The bridge does not wake an idle terminal agent.
 
 ```bash
 node <kit-root>/scripts/mentor.mjs next --url <server-url> --token <access-token> --mentor-id <stable-id> --takeover
@@ -8,13 +8,15 @@ node <kit-root>/scripts/mentor.mjs next --url <server-url> --token <access-token
 
 Use one random, stable mentor id for the process lifetime. `--takeover` belongs only on first poll; it replaces any stale supervisor lease.
 
-Command waits for next learner message. After reasoning, send mentor text:
+The command waits for the next learner event. Preserve its `mentorTurn.id` and `mentorTurn.baseRevision`. After reasoning, commit the answer and canvas together:
 
 ```bash
-node <kit-root>/scripts/mentor.mjs text --url <server-url> --token <access-token> --mentor-id <stable-id> --file <response.txt>
+node <kit-root>/scripts/mentor.mjs turn --url <server-url> --token <access-token> --mentor-id <stable-id> --file <turn.json>
 ```
 
-Update browser canvas:
+`turn.json` includes `turnId`, `baseRevision`, learner-facing `message`, and the canvas payload below. Use `messages: []` to preserve the existing canvas. Optional `milestone` and `pattern` follow `mentor-recovery.md` and `teaching-patterns.md`. Only a successful atomic commit completes delivered work; legacy streamed text or a canvas update alone does not acknowledge the queue item. A revision conflict retains the question for browser retry; never silently replace its revision.
+
+The standalone compatibility command can update the browser canvas when no complete response is being published:
 
 ```bash
 node <kit-root>/scripts/mentor.mjs canvas --url <server-url> --token <access-token> --mentor-id <stable-id> --file <payload.json>

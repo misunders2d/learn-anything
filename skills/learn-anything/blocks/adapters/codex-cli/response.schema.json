@@ -2,16 +2,169 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["message", "focus", "a2ui_jsonl", "task_title", "target_component_id", "target_quote", "continuation_kind", "action_type", "continuation"],
+  "required": [
+    "message",
+    "focus",
+    "a2ui_jsonl",
+    "task_title",
+    "target_component_id",
+    "target_quote",
+    "continuation_kind",
+    "action_type",
+    "continuation",
+    "milestone",
+    "pattern"
+  ],
   "properties": {
-    "message": { "type": "string", "minLength": 1 },
-    "focus": { "type": "string", "enum": ["chat", "work"] },
-    "a2ui_jsonl": { "type": ["string", "null"] },
-    "task_title": { "type": ["string", "null"] },
-    "target_component_id": { "type": ["string", "null"] },
-    "target_quote": { "type": ["string", "null"] },
-    "continuation_kind": { "type": "string", "enum": ["question", "action"] },
-    "action_type": { "type": ["string", "null"], "enum": ["run", "edit", "answer", "adjust", "read", "inspect", "submit", null] },
-    "continuation": { "type": "string", "minLength": 1 }
+    "message": {
+      "type": "string",
+      "minLength": 1
+    },
+    "focus": {
+      "type": "string",
+      "enum": [
+        "chat",
+        "work"
+      ]
+    },
+    "a2ui_jsonl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "task_title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_component_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_quote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "continuation_kind": {
+      "type": "string",
+      "enum": [
+        "question",
+        "action"
+      ]
+    },
+    "action_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "run",
+        "edit",
+        "answer",
+        "adjust",
+        "read",
+        "inspect",
+        "submit",
+        null
+      ]
+    },
+    "continuation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "milestone": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "takeaway",
+        "nextStep",
+        "concepts",
+        "misconceptions"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "takeaway": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "nextStep": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "concepts": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "misconceptions": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "pattern": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "description",
+        "tags",
+        "a2ui_jsonl"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        },
+        "a2ui_jsonl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24000
+        }
+      }
+    }
   }
 }

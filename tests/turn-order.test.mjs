@@ -14,3 +14,9 @@ test("latest learner turn remains active while an older learner turn is supersed
   assert.equal(mentorItemIsSuperseded({ type: "user_message", message: newer }, session), false);
   assert.equal(mentorItemIsSuperseded({ type: "user_message", message: older }, session), true);
 });
+
+test('explicit retry is ordered at retry time without superseding newer learner work', () => {
+  const item = { type: 'user_message', message: { id: 'old' }, retryRequestedAt: '2026-09-19T12:00:02.000Z' };
+  assert.equal(mentorItemIsSuperseded(item, { transcript: [{ role: 'user', id: 'new', createdAt: '2026-09-19T12:00:01.000Z' }] }), false);
+  assert.equal(mentorItemIsSuperseded(item, { transcript: [{ role: 'user', id: 'newer', createdAt: '2026-09-19T12:00:03.000Z' }] }), true);
+});

@@ -89,7 +89,7 @@ process.stdin.on("data", (chunk) => {
     const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
     if (!line) continue;
     const command = JSON.parse(line);
-    if (command.type === "get_state") send({ id: command.id, type: "response", command: "get_state", success: true, data: { model } });
+    if (command.type === "get_state") send({ id: command.id, type: "response", command: "get_state", success: true, data: { model, sessionId: "test-session", isStreaming: false, isCompacting: false, pendingMessageCount: 0, messageCount: prompts } });
     if (command.type === "set_model") { model = { provider: command.provider, id: command.modelId }; send({ id: command.id, type: "response", command: "set_model", success: true, data: model }); }
     if (command.type === "prompt") {
       prompts += 1;
@@ -249,4 +249,12 @@ test("Pi model list parser returns provider-qualified selectable models", () => 
   const models = parsePiModelList(`provider        model             context  max-out  thinking  images\nopenai-codex    gpt-5.6-sol       272K     128K     yes       yes\nanthropic       claude-haiku-4-5  200K     64K      yes       yes\n`);
   assert.deepEqual(models.map(({ id }) => id), ["openai-codex/gpt-5.6-sol", "anthropic/claude-haiku-4-5"]);
   assert.equal(models[0].thinking, true);
+});
+
+test('milestone reconciliation passes bounded portable evidence and rejects malformed metadata', () => {
+  const item = { type: 'user_message', message: { content: 'I tried the pause.' }, mentorTurn: { id: 'milestone-turn', baseRevision: 3 } };
+  const candidate = { message: 'You reported a deliberate pause.', presentation: 'chat', continuation: { kind: 'question', text: 'What did you notice?' }, milestone: { title: 'Reported practice', takeaway: 'Learner reported pausing before a line.', nextStep: 'Compare the delivery without a pause.', concepts: ['timing'] } };
+  assert.deepEqual(reconcileMentorTurn(item, candidate, {}).milestone, candidate.milestone);
+  assert.throws(() => reconcileMentorTurn(item, { ...candidate, milestone: { ...candidate.milestone, takeaway: 'x'.repeat(4001) } }, {}), /milestone.takeaway/);
+  assert.throws(() => reconcileMentorTurn(item, { ...candidate, milestone: { ...candidate.milestone, concepts: [42] } }, {}), /milestone.concepts/);
 });

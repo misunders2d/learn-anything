@@ -1,5 +1,27 @@
 import { resolveDataBinding } from "../../a2ui/state.mjs";
 
+// Legacy output without execution evidence must be rerun before submission.
+export function resultMatchesCode(result, code) {
+  return typeof code === "string"
+    && typeof result?.executedCode === "string"
+    && typeof result?.codeHash === "string"
+    && result.codeHash.length > 0
+    && result.executedCode === code;
+}
+
+export function recoveryCanAct(item) {
+  return Boolean(item?.turnId && item.status === "failed");
+}
+
+export function learningProgress(progress) {
+  const milestones = Array.isArray(progress?.milestones)
+    ? progress.milestones.filter((item) => item && typeof item.title === "string")
+    : [];
+  const count = Number.isInteger(progress?.milestone) && progress.milestone >= 0
+    ? progress.milestone : milestones.length;
+  return { count, milestones, nextStep: typeof progress?.nextStep === "string" ? progress.nextStep : "" };
+}
+
 export function canvasComponents(canvas) {
   const surface = canvas?.activeSurfaceId ? canvas.surfaces?.[canvas.activeSurfaceId] : null;
   return surface ? Object.values(surface.components || {}) : [];

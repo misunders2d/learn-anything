@@ -62,9 +62,12 @@ export function collectPiRpcTurn(events) {
 }
 
 export class PiRpcClient {
-  constructor({ command = "pi", args, cwd, spawnImpl = spawnChild, timeoutMs = 300_000 }) {
+  constructor({ command = "pi", args, cwd, spawnImpl = spawnChild, timeoutMs = 300_000, abortTimeoutMs = 5_000, expectedSessionId = null }) {
     this.child = spawnImpl(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
     this.timeoutMs = timeoutMs;
+    this.abortTimeoutMs = abortTimeoutMs;
+    this.expectedSessionId = expectedSessionId;
+    this.recovering = false;
     this.pending = new Map();
     this.activeTurn = null;
     this.stderr = "";
@@ -105,6 +108,7 @@ export class PiRpcClient {
     try { event = JSON.parse(line); }
     catch (error) {
       this.#fail(new Error(`Pi RPC protocol returned invalid JSONL: ${error.message}`));
+      this.close();
       return;
     }
     if (event.type === "response" && event.id && this.pending.has(event.id)) {
@@ -138,14 +142,14 @@ export class PiRpcClient {
     }
   }
 
-  command(type, fields = {}) {
+  command(type, fields = {}, timeoutMs = this.timeoutMs) {
     if (this.closed || !this.child.stdin.writable) return Promise.reject(new Error("Pi RPC process is not writable."));
     const id = randomUUID();
     return new Promise((resolvePromise, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Pi RPC ${type} timed out.`));
-      }, this.timeoutMs);
+      }, timeoutMs);
       this.pending.set(id, { resolve: resolvePromise, reject, timer });
       this.child.stdin.write(`${JSON.stringify({ id, type, ...fields })}\n`, (error) => {
         if (!error) return;
@@ -157,7 +161,14 @@ export class PiRpcClient {
   }
 
   async ready() {
-    return this.command("get_state");
+    try {
+      const state = await this.command("get_state", {}, this.abortTimeoutMs);
+      if (!state?.model?.id || !state.model.provider) throw new Error("Pi RPC readiness has no selected model.");
+      if (state.isStreaming !== false || state.isCompacting !== false || state.pendingMessageCount !== 0) throw new Error("Pi RPC readiness is not idle.");
+      if (!state.sessionId || this.expectedSessionId && state.sessionId !== this.expectedSessionId) throw new Error("Pi RPC session identity mismatch.");
+      if (!Number.isInteger(state.messageCount) || state.messageCount < 0) throw new Error("Pi RPC readiness has invalid message count.");
+      return state;
+    } catch (error) { this.close(); throw error; }
   }
 
   async setModel(model) {
@@ -170,36 +181,47 @@ export class PiRpcClient {
   }
 
   async prompt(message) {
+    if (this.closed || this.recovering) throw new Error("Pi RPC is not ready for another turn.");
     if (this.activeTurn) throw new Error("Pi RPC mentor already has an active turn.");
     const turnPromise = new Promise((resolvePromise, reject) => {
       const timer = setTimeout(() => {
-        if (this.activeTurn?.reject === reject) this.activeTurn = null;
         reject(new Error("Pi RPC mentor turn timed out."));
       }, this.timeoutMs);
       this.activeTurn = { events: [], resolve: resolvePromise, reject, timer };
     });
     try {
-      await this.command("prompt", { message });
-      return await turnPromise;
+      const [, turn] = await Promise.all([this.command("prompt", { message }), turnPromise]);
+      return turn;
     } catch (error) {
-      if (this.activeTurn) {
-        clearTimeout(this.activeTurn.timer);
-        this.activeTurn = null;
-      }
+      this.recovering = true;
+      try {
+        await this.command("abort", {}, this.abortTimeoutMs);
+        await this.ready();
+        // Abort acknowledgement alone is not completion. Require the settled
+        // boundary before reusing this stream, so late events cannot cross turns.
+        if (this.activeTurn) throw new Error("Pi RPC abort did not settle the active turn.");
+      } catch { this.close(); }
+      finally { this.recovering = false; }
       throw error;
     }
   }
 
   async abort() {
     if (!this.activeTurn) return false;
-    await this.command("abort");
+    await this.command("abort", {}, this.abortTimeoutMs);
     return true;
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.#fail(new Error("Pi RPC process closed."));
     this.child.stdin.end();
-    if (this.child.exitCode === null) this.child.kill("SIGTERM");
+    if (this.child.exitCode === null) {
+      this.child.kill("SIGTERM");
+      const timer = setTimeout(() => { if (this.child.exitCode === null && !this.child.signalCode) this.child.kill("SIGKILL"); }, 250);
+      timer.unref?.();
+      this.child.once("exit", () => clearTimeout(timer));
+    }
   }
 }

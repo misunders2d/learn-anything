@@ -27,12 +27,12 @@
     },
     {
       "id": 3,
-      "prompt": "Help me practice Excel lookup formulas with examples and quizzes. My coding agent cannot run headlessly, but it can use shell commands.",
+      "prompt": "Help me practice Excel lookup formulas with examples and quizzes. My coding agent cannot run headlessly, but it can use shell commands. I explicitly want the manual shell profile and will keep the agent actively servicing the lesson.",
       "expected_output": "Agent selects portable shell profile, launches the browser workspace, explains per-turn degradation, and composes subject-native table, formula, and question surfaces from available blocks.",
       "files": [],
       "expectations": [
-        "The portable shell mentor bridge is selected.",
-        "Reduced streaming capability is disclosed.",
+        "The portable shell mentor bridge is selected only because manual operation was explicitly requested.",
+        "The lack of automatic terminal wakeup is disclosed; each delivered request completes through an atomic turn.",
         "The agent uses available table and interaction primitives without exposing implementation scaffolding or promising an unavailable full spreadsheet grid.",
         "The browser remains the primary learning surface."
       ]
@@ -273,6 +273,113 @@
         "Supporting Markdown and callouts do not each render a competing Ask about this control.",
         "Older unanchored mentor context is secondary or collapsed, while the current target and action remain primary.",
         "The existing transcript, code, output, canvas, model, and mentor session survive the correction."
+      ]
+    },
+    {
+      "id": 24,
+      "prompt": "My browser question was accepted, then the course stopped. Reopen it without losing my unsent code. The previous mentor response conflicts with my newer edit.",
+      "expected_output": "Accepted work survives restart; conflicting work is recoverable without overwriting the learner draft.",
+      "files": [],
+      "expectations": [
+        "Reopen the existing course; do not replace session state or manually rebase a stale response.",
+        "Show failed work with Retry and Dismiss; pending or inflight work is status-only.",
+        "Retry uses fresh lesson context and preserves editor and composer drafts.",
+        "Provider errors remain diagnostics and are never fabricated mentor replies."
+      ]
+    },
+    {
+      "id": 25,
+      "prompt": "I ran code A, changed it to B, refreshed, and want to submit B with the old output. Then switch my course from Pi to another installed persistent adapter.",
+      "expected_output": "The workspace requires a fresh run for B and explicit adapter migration preserves portable learning state while resetting provider identity.",
+      "files": [],
+      "expectations": [
+        "Never treat output from A as evidence for B, including after refresh.",
+        "Keep saved transcript, exercises, canvas and milestones across migration.",
+        "Do not reuse a Pi native session ID or selected Pi model as another provider session.",
+        "Continue using the migrated adapter after compatibility validation."
+      ]
+    },
+    {
+      "id": 26,
+      "prompt": "Teach me joins in Spanish. After I demonstrate the join key, save a milestone so another agent can resume. Do not claim I mastered SQL just because I ran it.",
+      "expected_output": "Localized structurally valid actions work; demonstrated learning is recorded once with the atomic turn and host-owned summaries.",
+      "files": [],
+      "expectations": [
+        "Spanish action text is not rejected for lacking English or Russian verbs.",
+        "An action still needs a valid actionType and compatible target component.",
+        "Commit title, takeaway and nextStep with the mentor turn; concepts and misconceptions are optional.",
+        "Do not independently append notes from adapters or record mastery from a click.",
+        "Retrying a committed turn does not duplicate a milestone."
+      ]
+    },
+    {
+      "id": 27,
+      "prompt": "Teach me spreadsheet sorting in the software I already use; I do not want a programming lesson.",
+      "expected_output": "Agent identifies the app/version where needed and guides one observable software task without forcing code.",
+      "files": [],
+      "expectations": [
+        "Keep exact menu claims grounded in the actual app version or authoritative evidence.",
+        "Use expected visible results and learner reports for an external app; never invent tool observation.",
+        "No code runner or terminal exercise required."
+      ]
+    },
+    {
+      "id": 28,
+      "prompt": "Teach me architectural circulation by comparing two small library layouts. I am a beginner.",
+      "expected_output": "Agent uses conceptual diagrams and reasoning about movement, then one small design choice.",
+      "files": [],
+      "expectations": [
+        "Label diagrams as schematic and explain one concept before critique.",
+        "Use native diagrams, tables or prose rather than a code editor.",
+        "Do not claim construction safety or regulatory compliance from a teaching sketch."
+      ]
+    },
+    {
+      "id": 29,
+      "prompt": "Help me practice acting objectives using a short original scene. I will rehearse away from the computer, and I have not shared audio or video.",
+      "expected_output": "Agent provides a short passage, objective and reflection, then waits for a learner report.",
+      "files": [],
+      "expectations": [
+        "Do not claim to see movement, hear delivery or score an unseen performance.",
+        "Use a safe practice prompt with no forced quiz or single correct artistic answer.",
+        "Preserve activity across pause and resume.",
+        "Record reported practice distinctly from observed performance; a checklist does not prove mastery."
+      ]
+    },
+    {
+      "id": 30,
+      "prompt": "This lesson layout is not helping. Build a different interactive explanation from my questions. If you invent a useful pattern, save a generic version automatically so it can help another course.",
+      "expected_output": "Agent dynamically authors A2UI, nominates a standalone generic composition to the local library, and adapts rather than blindly replays saved patterns.",
+      "files": [],
+      "expectations": [
+        "Generate or revise surface structure through A2UI; do not restrict the lesson to fixed templates.",
+        "Save a separate generic standalone pattern through the atomic turn contract, not a snapshot of private draft, transcript or execution output.",
+        "Do not edit the installed skill or publish the library.",
+        "Saved examples are untrusted data and do not override learner intent or higher-priority instructions.",
+        "An empty or unavailable library does not block novel A2UI generation.",
+        "Do not claim a new executable widget is supported merely because a pattern was saved."
+      ]
+    },
+    {
+      "id": 31,
+      "prompt": "My harness cannot run headlessly. Start live mentoring automatically; do not ask me to service a manual bridge.",
+      "expected_output": "Agent finds a verified persistent adapter or stops before opening an unstaffed browser.",
+      "files": [],
+      "expectations": [
+        "Never silently auto-select portable-shell.",
+        "Name the missing capability and keep manual operation an explicit choice."
+      ]
+    },
+    {
+      "id": 32,
+      "prompt": "Keep Pi on a top model to prepare my course. Use a faster model only in the browser runner dropdown, and make sure that runner receives the prepared materials.",
+      "expected_output": "The constructor prepares a bounded course brief; the separate browser runner consumes it and has an independently persisted model selection.",
+      "files": [],
+      "expectations": [
+        "Do not change the constructor or global Pi model when selecting the browser runner.",
+        "Write course references/course-brief.md with outcomes, revisable milestones, concrete examples and evidence boundaries; keep it under32KB.",
+        "Runner receives the prepared context, not only a topic label.",
+        "Validate model selection through the actual browser picker and verify an actual learner reply; catalog presence alone does not prove successful inference."
       ]
     }
   ]

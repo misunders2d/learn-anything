@@ -71,7 +71,7 @@ test("mentor runtime resolves the adapter declared by the composition", async ()
   }, catalog, kitRoot);
 
   assert.equal(descriptor.id, "adapter.codex-cli");
-  assert.equal(descriptor.protocolVersion, 1);
+  assert.equal(descriptor.protocolVersion, 2);
   assert.equal(descriptor.runtime, "node");
   assert.match(descriptor.entry, /blocks\/adapters\/codex-cli\/adapter\.mjs$/);
   assert.equal(descriptor.capabilities.resume, true);

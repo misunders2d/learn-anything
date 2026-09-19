@@ -112,6 +112,7 @@ class ChromeHarness {
   }
 
   async screenshot(path) {
+    await this.evaluate("Promise.all(document.getAnimations().filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().iterations)).map((animation) => animation.finished.catch(() => {})))");
     const result = await this.call("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
     await writeFile(path, Buffer.from(result.data, "base64"));
   }
@@ -161,11 +162,13 @@ function browserState() {
     rescue: document.body.dataset.rescue || '',
     rootText: document.getElementById('root')?.innerText || '',
     connected: Boolean(document.querySelector('.status-dot.is-connected')),
-    status: document.querySelector('[role=status]')?.innerText || '',
-    messages: Array.from(document.querySelectorAll('.mentor-pane article')).map((item) => item.innerText),
+    status: Array.from(document.querySelectorAll('.mentor-presence')).map((item) => item.textContent.trim()).find(Boolean) || '',
+    messages: Array.from(document.querySelectorAll('.mentor-pane article')).map((item) => item.textContent),
     lastMessageRole: document.querySelector('.mentor-pane article:last-of-type')?.classList.contains('chat-message-mentor') ? 'mentor' : 'user',
     stageTitle: document.querySelector('.stage-pane h2')?.innerText || '',
     runVisible: Array.from(document.querySelectorAll('.stage-pane button')).some((button) => button.innerText.trim() === 'Run'),
+    runBusy: Array.from(document.querySelectorAll('.stage-pane button')).some((button) => button.innerText.trim() === 'Running…'),
+    submitReady: Boolean(document.querySelector('.stage-pane .submit-code:not(:disabled)')),
     editorVisible: Boolean(document.querySelector('.monaco-editor, .code-fallback')),
     outputText: document.querySelector('.execution-result')?.innerText || '',
     anchoredReplyText: document.querySelector('.anchored-mentor-note')?.innerText || '',
@@ -199,6 +202,7 @@ const firstMessage = option(args, "--message") || "I am completely new to Rust. 
 const allowChat = args.includes("--allow-chat");
 const currentWork = args.includes("--current-work");
 const mentorTurnOnly = args.includes("--mentor-turn-only");
+const runnerModel = option(args, "--runner-model");
 const interruptWith = option(args, "--interrupt-with");
 const expectedInterruptText = option(args, "--expect");
 const workQuestion = option(args, "--work-question");
@@ -208,14 +212,46 @@ const profile = await mkdtemp(join(tmpdir(), "learn-anything-live-browser-"));
 const browser = new ChromeHarness(await browserBinary(), profile, `${url}/#token=${token}`);
 const checks = [];
 
+async function readSessionApi(path) {
+  const response = await fetch(`${url}${path}`, { headers: { "x-learn-anything-token": token } });
+  assert.ok(response.ok, `${path} must be readable for runner model verification`);
+  return response.json();
+}
+
+async function selectRunnerModel(requested, state) {
+  const catalog = await readSessionApi("/api/models");
+  assert.equal(catalog.supported, true, "this course must support browser runner model selection");
+  const matches = catalog.models.filter((model) => model.id === requested || model.model === requested);
+  assert.equal(matches.length, 1, `runner model ${requested} must identify one available model`);
+  const model = matches[0];
+  const pane = state.focus === "work" && !state.rescue ? ".stage-pane" : ".mentor-pane";
+  const selector = `${pane} input[aria-label="Mentor model"]`;
+  await waitFor(() => browser.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled)`), "enabled course model picker", 15_000);
+  await browser.click(`document.querySelector(${JSON.stringify(selector)})`);
+  await browser.evaluate(`(() => {
+    const input = document.querySelector(${JSON.stringify(selector)});
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(`${model.provider} ${model.model}`)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  const optionExpression = `Array.from(document.querySelectorAll('${pane} .model-options button[role="option"]')).find((button) => button.querySelector('span')?.textContent === ${JSON.stringify(model.model)} && button.querySelector('small')?.textContent === ${JSON.stringify(model.provider)})`;
+  await waitFor(() => browser.evaluate(`Boolean(${optionExpression})`), "matching runner model option", 10_000);
+  await browser.click(optionExpression);
+  await waitFor(async () => (await readSessionApi("/api/models")).selectedModel === model.id
+    && (await readSessionApi("/api/session")).mentorModel === model.id, "persisted browser-selected runner model", 15_000);
+  assert.equal(await browser.evaluate(`document.querySelector(${JSON.stringify(selector)}).value`), model.id);
+  checks.push("browser-runner-model-selected-and-persisted");
+}
+
 async function send(text) {
   await waitFor(async () => !(await browser.evaluate(browserState())).status, "mentor idle before send", 180_000);
   const before = (await browser.evaluate(browserState())).messages.length;
+  const previousRecovery = new Set((await readSessionApi("/api/session")).mentorRecovery?.map((item) => item.turnId) || []);
+  let failedTurn = false;
   await browser.evaluate(`(() => {
     window.__mentorStatuses = [];
     window.__mentorStatusObserver?.disconnect();
     window.__mentorStatusObserver = new MutationObserver(() => {
-      const status = document.querySelector('[role=status]')?.innerText || '';
+      const status = Array.from(document.querySelectorAll('.mentor-presence')).map((item) => item.textContent.trim()).find(Boolean) || '';
       if (status) window.__mentorStatuses.push(status);
     });
     window.__mentorStatusObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
@@ -232,8 +268,12 @@ async function send(text) {
   }, "exact visible learner message", 10_000);
   await waitFor(async () => {
     const state = await browser.evaluate(browserState());
+    const saved = await readSessionApi("/api/session");
+    failedTurn = saved.mentorRecovery?.some((item) => item.status === "failed" && !previousRecovery.has(item.turnId)) || false;
+    if (failedTurn) return true;
     return state.messages.length >= before + 2 && !state.status && state.lastMessageRole === "mentor";
   }, "real mentor reply", 180_000);
+  assert.equal(failedTurn, false, "browser-selected runner failed; inspect course diagnostics and recovery UI");
   const statuses = await browser.evaluate("window.__mentorStatuses || []");
   assert.ok(statuses.some((status) => /thinking|writing|adding|waiting|responding/i.test(status)), "visible mentor activity status must occur");
   await browser.evaluate("window.__mentorStatusObserver?.disconnect()");
@@ -253,15 +293,17 @@ try {
   assert.ok(state.rootText.trim());
   checks.push(currentWork ? "existing-work-visible" : "initial-chat-visible");
 
+  if (runnerModel) await selectRunnerModel(runnerModel, state);
+
   if (!currentWork) {
     await send(firstMessage);
     state = await browser.evaluate(browserState());
     assert.ok(state.messages.at(-1).length > 40);
-    checks.push("clicked-send-real-codex-reply");
+    checks.push("clicked-send-real-mentor-reply");
     checks.push("waiting-responding-idle-visible");
   }
 
-  if (state.focus !== "work" && !allowChat) {
+  if (state.focus !== "work" && !allowChat && !mentorTurnOnly) {
     await send("That makes sense. Show me a complete tiny worked example, then give me one clear change to make and run in the browser.");
     state = await browser.evaluate(browserState());
   }
@@ -299,14 +341,18 @@ try {
       checks.push(unanchoredWorkQuestion ? "broad-work-question-opens-chat" : "clicked-work-question-and-received-reply");
       state = await browser.evaluate(browserState());
     }
-    if (state.focus === "work" && state.editorVisible && state.runVisible) {
+    if (!mentorTurnOnly && state.focus === "work" && state.editorVisible && state.runVisible) {
       const messagesBeforeRun = state.messages.length;
       await browser.click("Array.from(document.querySelectorAll('.stage-pane button')).find((button) => button.innerText.trim() === 'Run')");
       await waitFor(async () => {
         const current = await browser.evaluate(browserState());
-        return current.outputText;
+        return current.outputText && !current.runBusy && current.submitReady;
       }, "visible execution result", 60_000);
       checks.push("clicked-run-visible-output");
+      assert.equal((await browser.evaluate(browserState())).messages.length, messagesBeforeRun, "Run keeps execution local until explicit submission");
+      checks.push("run-stays-local-until-submitted");
+      await browser.click("document.querySelector('.stage-pane .submit-code')");
+      checks.push("clicked-submit-to-mentor");
       if (interruptWith) {
         await browser.click("document.getElementById('mentor-rescue')");
         await waitFor(async () => (await browser.evaluate(browserState())).composerVisible, "interrupt rescue chat", 10_000);
@@ -331,27 +377,28 @@ try {
       } else {
         await waitFor(async () => {
           const current = await browser.evaluate(browserState());
-          return current.messages.length > messagesBeforeRun && !current.status;
+          return current.messages.length > messagesBeforeRun && current.lastMessageRole === "mentor" && !current.status;
         }, "mentor response to execution", 180_000);
         checks.push("execution-returns-to-real-mentor");
         state = await browser.evaluate(browserState());
       }
     }
-    if (screenshotPath) {
-      await browser.screenshot(screenshotPath);
-      checks.push("captured-workspace-screenshot");
-    }
-    if (state.focus === "work") {
-      await browser.click("document.getElementById('mentor-rescue')");
-      await waitFor(async () => {
-        const current = await browser.evaluate(browserState());
-        return current.rescue === "1" && current.composerVisible && current.rootText.trim();
-      }, "rescue chat", 10_000);
-      checks.push("clicked-ask-mentor-nonblank-chat");
-    }
   } else {
     assert.ok(state.composerVisible);
     checks.push("chat-remains-primary");
+  }
+
+  if (screenshotPath) {
+    await browser.screenshot(screenshotPath);
+    checks.push("captured-workspace-screenshot");
+  }
+  if (state.focus === "work") {
+    await browser.click("document.getElementById('mentor-rescue')");
+    await waitFor(async () => {
+      const current = await browser.evaluate(browserState());
+      return current.rescue === "1" && current.composerVisible && current.rootText.trim();
+    }, "rescue chat", 10_000);
+    checks.push("clicked-ask-mentor-nonblank-chat");
   }
 
   await browser.call("Page.reload", { ignoreCache: true });
@@ -367,6 +414,7 @@ try {
   process.stdout.write(`${JSON.stringify({
     ok: true,
     checks,
+    runnerModel: persisted.mentorModel || null,
     canvas: {
       focus: persisted.canvas?.focus || "chat",
       title: surface?.dataModel?.title || "",
@@ -374,6 +422,11 @@ try {
     },
     lastMentorMessage: persisted.transcript?.filter((message) => message.role === "assistant").at(-1)?.content || "",
   }, null, 2)}\n`);
+} catch (error) {
+  if (screenshotPath && browser.socket?.readyState === WebSocket.OPEN) {
+    await browser.screenshot(screenshotPath.replace(/\.png$/i, "-failure.png")).catch(() => {});
+  }
+  throw error;
 } finally {
   await browser.stop();
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

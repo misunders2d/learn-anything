@@ -6,7 +6,44 @@ import {
   mergeSnapshotMessages,
   upsertMessage,
 } from "../skills/learn-anything/blocks/web/src/message-state.mjs";
-import { connectionIssueFor, firstLearnerComponentId, resolveFocus, shouldReleaseRescue, workTaskKey } from "../skills/learn-anything/blocks/web/src/workspace-state.mjs";
+import { connectionIssueFor, firstLearnerComponentId, learningProgress, recoveryCanAct, resultMatchesCode, resolveFocus, shouldReleaseRescue, workTaskKey } from "../skills/learn-anything/blocks/web/src/workspace-state.mjs";
+
+test("execution evidence survives refresh without attaching run A output to edited code B", () => {
+  const executedCode = "console.log('A');";
+  const editedCode = "console.log('B');";
+  const result = { stdout: "A\n", executedCode, codeHash: "server-hash-A" };
+  assert.equal(resultMatchesCode(result, executedCode), true);
+  assert.equal(resultMatchesCode(result, editedCode), false);
+  const restored = JSON.parse(JSON.stringify({ value: editedCode, lastResult: result }));
+  assert.equal(resultMatchesCode(restored.lastResult, restored.value), false);
+  assert.equal(resultMatchesCode({ stdout: "legacy output" }, editedCode), false);
+  assert.equal(resultMatchesCode({ executedCode, codeHash: "" }, executedCode), false);
+  assert.equal(resultMatchesCode({ error: "Request failed" }, editedCode), false);
+  assert.equal(resultMatchesCode({ error: "SyntaxError", executedCode, codeHash: "server-hash-A" }, executedCode), true);
+  assert.equal(resultMatchesCode({ executedCode: "", codeHash: "empty-code-hash" }, ""), true);
+  assert.equal(resultMatchesCode(result, `${executedCode}\n`), false);
+});
+
+test("recovery exposes actions only for failed work, never queued or active requests", () => {
+  for (const status of ["pending", "inflight", "completed", "dismissed", "unknown", undefined]) {
+    assert.equal(recoveryCanAct({ turnId: "turn", status }), false);
+  }
+  assert.equal(recoveryCanAct({ turnId: "turn", status: "failed" }), true);
+  assert.equal(recoveryCanAct({ status: "failed" }), false);
+  assert.equal(recoveryCanAct(null), false);
+});
+
+test("learning progress shows durable milestones without inferring mastery from activity", () => {
+  assert.deepEqual(learningProgress(null), { count: 0, milestones: [], nextStep: "" });
+  assert.equal(learningProgress({ status: "activity_complete" }).count, 0);
+  const milestone = { title: "First loop", takeaway: "Repeat a step", nextStep: "Try a condition" };
+  assert.deepEqual(learningProgress({ milestone: 1, milestones: [milestone], nextStep: "Try a condition" }), {
+    count: 1, milestones: [milestone], nextStep: "Try a condition",
+  });
+  assert.deepEqual(learningProgress({ milestone: -1, milestones: [null, {}, milestone], nextStep: 42 }), {
+    count: 1, milestones: [milestone], nextStep: "",
+  });
+});
 
 test("message start keeps a stable object after the partial map is cleared", () => {
   const event = { messageId: "message-1", role: "user" };

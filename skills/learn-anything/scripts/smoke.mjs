@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createLearnAnythingServer } from "../blocks/server/server.mjs";
@@ -26,7 +26,10 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
   const isolatedSession = join(temp, "session");
   const realWriteProbe = join(sourceSession, "exercises", `.smoke-write-${process.pid}`);
   await mkdir(join(isolatedSession, "exercises"), { recursive: true });
-  await cp(join(sourceSession, "session.json"), join(isolatedSession, "session.json"));
+  const fixture = JSON.parse(await readFile(join(sourceSession, "session.json"), "utf8"));
+  // Smoke work must never consume or replay accepted real learner questions.
+  fixture.mentorWork = [];
+  await writeFile(join(isolatedSession, "session.json"), JSON.stringify(fixture));
   const runtime = await createLearnAnythingServer({ sessionDir: isolatedSession, kitRoot, port: 0 });
   let address;
 
@@ -100,15 +103,6 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
       if (malformed.status !== 400) throw new Error(`${path} accepted malformed A2UI.`);
     }
 
-    const messageId = "smoke-assistant";
-    for (const event of [
-      { type: "TEXT_MESSAGE_START", messageId, role: "assistant" },
-      { type: "TEXT_MESSAGE_CONTENT", messageId, delta: "smoke-reply" },
-      { type: "TEXT_MESSAGE_END", messageId },
-    ]) {
-      await jsonFetch(`${address.url}/api/mentor/event`, { method: "POST", body: JSON.stringify(event) }, mentorAuth);
-    }
-
     const stage = {
       version: "learn-anything/v1",
       surfaceId: "smoke",
@@ -124,7 +118,16 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
     };
     const canvasPayload = canvasEventValue(canvasFromStage(stage, stage.title));
     canvasPayload.continuation = { kind: "action", text: "Choose Yes in the Ready? quiz.", taskTitle: "Smoke stage", targetComponentId: "smoke-quiz", actionType: "answer" };
-    await jsonFetch(`${address.url}/api/a2ui`, { method: "POST", body: JSON.stringify(canvasPayload) }, mentorAuth);
+    async function finishTurn(item, message, messages = []) {
+      return jsonFetch(`${address.url}/api/mentor/turn`, {
+        method: "POST",
+        body: JSON.stringify({
+          turnId: item.mentorTurn.id, baseRevision: item.mentorTurn.baseRevision,
+          message, ...canvasPayload, messages,
+        }),
+      }, mentorAuth);
+    }
+    await finishTurn(queued.body, "smoke-reply", canvasPayload.messages);
 
     await jsonFetch(`${address.url}/api/action`, {
       method: "POST",
@@ -170,6 +173,7 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
     const nextQuery = new URLSearchParams({ token: address.accessToken, mentorId });
     const stageAction = await jsonFetch(`${address.url}/api/mentor/next?${nextQuery}`);
     if (stageAction.body?.type !== "stage_action") throw new Error("Stage action did not reach mentor.");
+    await finishTurn(stageAction.body, "smoke-action-reply");
     let executionFeedbackSettled = false;
     const executionFeedbackPromise = jsonFetch(`${address.url}/api/mentor/next?${nextQuery}`).then((value) => {
       executionFeedbackSettled = true;
@@ -185,6 +189,7 @@ export async function smokeSession(sessionDir, { kitRoot } = {}) {
     if (executionFeedback.body?.type !== "execution_result" || !executionFeedback.body.submitted || !executionFeedback.body.result.stdout.includes("smoke-exec")) {
       throw new Error("Explicit code submission did not reach mentor.");
     }
+    await finishTurn(executionFeedback.body, "smoke-execution-reply");
 
     await jsonFetch(`${address.url}/api/action`, {
       method: "POST",

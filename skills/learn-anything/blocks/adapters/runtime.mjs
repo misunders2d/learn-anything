@@ -83,6 +83,9 @@ export class MentorSupervisor {
     onUnavailable = async () => {},
     sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
     maxRestarts = 3,
+    healthyMs = 60_000,
+    now = Date.now,
+    killTimeoutMs = 1_000,
   } = {}) {
     if (typeof spawnAdapter !== "function" || typeof waitUntilReady !== "function") {
       throw new Error("MentorSupervisor requires spawnAdapter and waitUntilReady.");
@@ -92,56 +95,97 @@ export class MentorSupervisor {
     this.onUnavailable = onUnavailable;
     this.sleep = sleep;
     this.maxRestarts = maxRestarts;
+    this.healthyMs = healthyMs;
+    this.now = now;
+    this.killTimeoutMs = killTimeoutMs;
+    this.readyAt = null;
+    this.recovery = null;
     this.child = null;
     this.stopping = false;
     this.interrupting = false;
     this.restarts = 0;
   }
 
+  async terminate(child, signal = "SIGTERM") {
+    if (!child || child.exitCode !== null || child.signalCode || child.spawnfile && !child.pid) return;
+    await new Promise((resolvePromise) => {
+      const timer = setTimeout(() => child.kill("SIGKILL"), this.killTimeoutMs);
+      child.once("exit", () => { clearTimeout(timer); resolvePromise(); });
+      child.kill(signal);
+    });
+  }
+
   async launch() {
     const child = this.spawnAdapter();
     this.child = child;
-    child.once("exit", (code, signal) => {
-      if (this.child === child) void this.handleExit(code, signal);
-    });
-    await this.waitUntilReady();
-    return child;
+    let ready = false;
+    let rejectExit;
+    const exited = new Promise((_, reject) => { rejectExit = reject; });
+    const onExit = (code, signal) => {
+      if (!ready) rejectExit(new Error(`Mentor exited before readiness: ${code ?? signal}`));
+      else if (this.child === child) void this.handleExit();
+    };
+    child.once("exit", onExit);
+    child.once("error", rejectExit);
+    try {
+      await Promise.race([this.waitUntilReady(), exited]);
+      if (this.stopping || this.child !== child || child.exitCode !== null || child.signalCode) throw new Error("Mentor stopped before readiness.");
+      ready = true;
+      this.readyAt = this.now();
+      return child;
+    } catch (error) {
+      if (this.child === child) this.child = null;
+      await this.terminate(child);
+      throw error;
+    } finally {
+      child.removeListener("error", rejectExit);
+    }
   }
 
   async start() {
     this.stopping = false;
+    this.restarts = 0;
     return this.launch();
   }
 
   async handleExit() {
     if (this.stopping) return;
-    const reason = this.interrupting ? "interrupt" : "crash";
+    if (this.recovery) return this.recovery;
+    this.recovery = this.recover();
+    try { await this.recovery; } finally { this.recovery = null; }
+  }
+
+  async recover() {
+    let reason = this.interrupting ? "interrupt" : "crash";
     this.interrupting = false;
     this.child = null;
-    await this.onUnavailable(reason);
-    if (reason === "crash") {
-      if (this.restarts >= this.maxRestarts) return;
-      this.restarts += 1;
-      await this.sleep(Math.min(2_000, this.restarts * 250));
-    }
-    if (this.stopping) return;
-    try {
-      await this.launch();
-    } catch {
-      await this.handleExit();
+    if (this.readyAt !== null && this.now() - this.readyAt >= this.healthyMs) this.restarts = 0;
+    this.readyAt = null;
+    while (!this.stopping) {
+      await this.onUnavailable(reason);
+      if (reason === "crash") {
+        if (this.restarts >= this.maxRestarts) return;
+        this.restarts += 1;
+        await this.sleep(Math.min(2_000, this.restarts * 250));
+      }
+      if (this.stopping) return;
+      try { await this.launch(); return; }
+      catch { reason = "crash"; }
     }
   }
 
   async interrupt() {
     if (!this.child || this.child.exitCode !== null) return false;
     this.interrupting = true;
-    this.child.kill("SIGINT");
+    await this.terminate(this.child, "SIGINT");
     return true;
   }
 
   async stop() {
     this.stopping = true;
-    if (this.child?.exitCode === null) this.child.kill("SIGTERM");
+    const child = this.child;
     this.child = null;
+    await this.terminate(child);
+    await this.recovery;
   }
 }

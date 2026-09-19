@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { initializeRecovery, recoverySnapshot, validateMilestone, commitMilestone, reconcileLearningFiles } from "./recovery.mjs";
+import { defaultTeachingLibraryDir, loadTeachingPatterns, saveTeachingPattern, validateTeachingPattern } from "../a2ui/pattern-library.mjs";
 import { mentorItemIsSuperseded } from "../adapters/codex-cli/turn-order.mjs";
 import { loadPiModelCatalog } from "../adapters/pi-cli/models.mjs";
 import { ACTION_TYPES, actionMatchesType, actionRepeatsVisibleState, actionSupportsComponent, isGenericAction } from "../continuation.mjs";
@@ -180,12 +182,21 @@ export async function createLearnAnythingServer({
   host = "127.0.0.1",
   port = 0,
   modelCatalogLoader = loadPiModelCatalog,
+  teachingLibraryDir = defaultTeachingLibraryDir(),
 } = {}) {
   if (!sessionDir) throw new Error("sessionDir is required.");
   const resolvedSessionDir = resolve(sessionDir);
+  // Library location belongs to the host; API payloads never select a path.
+  const libraryDir = resolve(teachingLibraryDir);
   const sessionPath = join(resolvedSessionDir, "session.json");
   const exercisesDir = join(resolvedSessionDir, "exercises");
   const webRoot = resolve(kitRoot, "blocks/web/dist");
+  let courseBrief = "";
+  try {
+    const briefPath = join(resolvedSessionDir, "references", "course-brief.md");
+    if ((await stat(briefPath)).size > 32_000) throw new Error("Course brief exceeds 32000 bytes; shorten the constructor's plan before launch.");
+    courseBrief = (await readFile(briefPath, "utf8")).trim();
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
   let session = await readSession(sessionPath);
   if (session.schemaVersion !== 3 || session.assembly?.schemaVersion !== 1 || !session.canvas) {
     throw new Error("Session requires explicit migration. Run learn-anything create for this topic with --migrate.");
@@ -194,7 +205,6 @@ export async function createLearnAnythingServer({
   if (assemblyBlockVersionMismatch(session, catalog)) {
     throw new Error("Session requires explicit migration. Run learn-anything create for this topic with --migrate.");
   }
-  let sessionChanged = false;
   const savedActivitySurface = session.canvas?.activeSurfaceId ? session.canvas.surfaces?.[session.canvas.activeSurfaceId] : null;
   const savedActivityTarget = savedActivitySurface?.components?.[session.continuation?.targetComponentId];
   const activityNeedsRepair = session.canvas?.focus === "work"
@@ -211,25 +221,23 @@ export async function createLearnAnythingServer({
       || actionRepeatsVisibleState(session.continuation?.text, session.canvas, session.continuation?.targetComponentId));
   if (activityNeedsRepair) {
     session.continuation = null;
-    sessionChanged = true;
   }
   if (session.assembly?.profile === "pi-cli" && !session.agentSessionId) {
     session.agentSessionId = randomUUID();
     session.mentorSessionInitialized = false;
-    sessionChanged = true;
   }
   if (!session.security?.accessToken) {
     session.security = { ...(session.security || {}), accessToken: randomBytes(32).toString("base64url") };
-    sessionChanged = true;
   }
   if (!Number.isInteger(session.mentorRevision) || session.mentorRevision < 0) {
     session.mentorRevision = 0;
-    sessionChanged = true;
   }
-  if (sessionChanged) await atomicSession(sessionPath, session);
+  initializeRecovery(session);
+  await atomicSession(sessionPath, session);
+  await reconcileLearningFiles(resolvedSessionDir, session);
   const accessToken = session.security.accessToken;
   const clients = new Set();
-  const mentorQueue = [];
+  const pendingWork = () => session.mentorWork.filter((work) => work.status === "pending");
   const mentorWaiters = [];
   const mentorReadyWaiters = new Set();
   const partialMessages = new Map();
@@ -241,6 +249,8 @@ export async function createLearnAnythingServer({
   let interruptHandler = null;
   let pendingRuns = 0;
   let persistTail = Promise.resolve();
+  let patternTail = Promise.resolve();
+  let libraryReadFailed = false;
   let browserDisconnectHandler = null;
   let browserDisconnectGraceMs = 5_000;
   let browserDisconnectTimer = null;
@@ -285,7 +295,7 @@ export async function createLearnAnythingServer({
     }
   }
 
-  function claimMentor(mentorId, takeover = false) {
+  async function claimMentor(mentorId, takeover = false) {
     if (!mentorId) throw httpError("mentorId is required.", 400);
     if (!activeMentorId) {
       activeMentorId = mentorId;
@@ -294,7 +304,7 @@ export async function createLearnAnythingServer({
       if (!takeover) throw httpError("Another mentor owns this workspace.", 409);
       activeMentorId = mentorId;
       activeMentorReady = false;
-      activeMentorTurn = null;
+      await failActiveWork("Mentor connection was replaced. Retry this request.");
       for (const waiter of [...mentorWaiters]) {
         if (waiter.mentorId !== mentorId) waiter.finish(STALE_MENTOR);
       }
@@ -308,12 +318,12 @@ export async function createLearnAnythingServer({
     broadcast(agEvent("CUSTOM", { name: "mentor_presence", value: { attached: true } }));
   }
 
-  function markMentorUnavailable(reason = "unavailable") {
+  async function markMentorUnavailable(reason = "unavailable") {
     activeMentorReady = false;
     activeMentorId = null;
-    activeMentorTurn = null;
+    await failActiveWork("Mentor disconnected before completing this request.");
     partialMessages.clear();
-    setMentorState(mentorQueue.length ? "waiting" : "idle");
+    setMentorState(pendingWork().length ? "waiting" : "idle");
     for (const waiter of [...mentorWaiters]) waiter.finish(STALE_MENTOR);
     broadcast(agEvent("CUSTOM", { name: "mentor_presence", value: { attached: false, reason } }));
   }
@@ -372,35 +382,148 @@ export async function createLearnAnythingServer({
     return task;
   }
 
-  function enqueueMentor(item) {
-    const queuedItem = {
-      ...item,
-      mentorTurn: { id: item?.mentorTurn?.id || randomUUID() },
-    };
-    if (queuedItem?.type === "user_message") {
-      for (let index = mentorQueue.length - 1; index >= 0; index -= 1) {
-        if (mentorQueue[index]?.type !== "user_message") mentorQueue.splice(index, 1);
-      }
-    }
-    const index = mentorWaiters.findIndex((waiter) => waiter.mentorId === activeMentorId);
-    const waiter = index >= 0 ? mentorWaiters.splice(index, 1)[0] : null;
-    if (waiter) waiter.finish(queuedItem);
-    else mentorQueue.push(queuedItem);
+  function emitRecovery() {
+    broadcast(agEvent("CUSTOM", { name: "mentor_recovery", value: recoverySnapshot(session) }));
   }
 
-  if (activityNeedsRepair) {
-    enqueueMentor({
+  function teachingLibraryStatus() {
+    const pending = session.mentorWork.filter((work) => work.status === "committed" && work.pattern && work.patternSave?.status !== "saved").length;
+    return {
+      status: pending ? "pending" : libraryReadFailed ? "unavailable" : "ready",
+      pending,
+      ...(pending ? { error: "A reusable pattern is waiting to be saved locally. Your lesson is saved." }
+        : libraryReadFailed ? { error: "Local teaching patterns are unavailable. Your lesson can continue." } : {}),
+    };
+  }
+
+  function emitTeachingLibraryStatus() {
+    broadcast(agEvent("CUSTOM", { name: "teaching_library_status", value: teachingLibraryStatus() }));
+  }
+
+  async function readTeachingPatterns(query) {
+    try {
+      const patterns = await loadTeachingPatterns({ libraryDir, query: String(query || "").slice(0, 2_000), limit: 3 });
+      libraryReadFailed = false;
+      return patterns;
+    } catch {
+      libraryReadFailed = true;
+      emitTeachingLibraryStatus();
+      return [];
+    }
+  }
+
+  function reconcileTeachingPatterns() {
+    const task = patternTail.then(async () => {
+      // One bounded pass per restart or commit; failed saves wait for a later
+      // pass and never turn a committed mentor answer into a teaching failure.
+      const pending = session.mentorWork.filter((work) => work.status === "committed" && work.pattern && work.patternSave?.status !== "saved").slice(0, 20);
+      for (const pendingWork of pending) {
+        let saved;
+        try { saved = await saveTeachingPattern(pendingWork.pattern, { libraryDir }); } catch { /* retain the durable outbox */ }
+        // A concurrent mentor commit may have cloned session while IO awaited.
+        const current = session.mentorWork.find((work) => work.turnId === pendingWork.turnId);
+        current.patternSave = {
+          status: saved ? "saved" : "pending",
+          attempts: (current.patternSave?.attempts || 0) + 1,
+          ...(saved ? { id: saved.id } : { error: "Local pattern save failed. Your lesson is saved; saving will retry later." }),
+        };
+        try {
+          await persist({ bumpRevision: false });
+        } catch {
+          current.patternSave.status = "pending";
+          current.patternSave.error = "Local pattern save status could not be recorded. Saving will retry later.";
+          emitTeachingLibraryStatus();
+          return;
+        }
+      }
+      if (pending.length) emitTeachingLibraryStatus();
+    });
+    // The original commit is authoritative even when outbox bookkeeping fails.
+    patternTail = task.catch(() => { emitTeachingLibraryStatus(); });
+    return patternTail;
+  }
+
+  async function failActiveWork(error) {
+    if (!activeMentorTurn) return;
+    const work = session.mentorWork.find((entry) => entry.turnId === activeMentorTurn.id);
+    activeMentorTurn = null;
+    if (work?.status === "inflight") {
+      work.status = "failed";
+      work.error = error;
+      await persist({ bumpRevision: false });
+      emitRecovery();
+    }
+  }
+
+  function wakeMentor() {
+    for (const waiter of [...mentorWaiters]) {
+      if (waiter.mentorId === activeMentorId) waiter.finish(true);
+    }
+  }
+
+  async function enqueueMentor(item, { bumpRevision = false } = {}) {
+    if (item.type === "user_message") {
+      for (const work of pendingWork()) {
+        if (work.type === "user_message") continue;
+        work.status = "failed";
+        work.error = "A newer question arrived. Retry this feedback if still needed.";
+      }
+    }
+    const turnId = item?.mentorTurn?.id || randomUUID();
+    const work = {
+      turnId, type: item.type, status: "pending", attempts: 0,
+      item: structuredClone({ ...item, mentorTurn: { id: turnId } }),
+    };
+    session.mentorWork.push(work);
+    await persist({ bumpRevision });
+    emitRecovery();
+    wakeMentor();
+    return work;
+  }
+
+  if (activityNeedsRepair && !session.mentorWork.some((work) => ["pending", "inflight", "failed"].includes(work.status) && work.item?.action === "repair_activity_focus")) {
+    await enqueueMentor({
       type: "stage_action",
       action: "repair_activity_focus",
       instruction: "The saved activity predates the coherent-focus contract. Preserve completed work and return one localized task_title plus one concrete next action whose instruction, artifact, target, and expected evidence all describe that same task.",
       canvasContext: session.canvas,
     });
-    mentorState = "waiting";
   }
+  if (pendingWork().length) mentorState = "waiting";
+  await reconcileTeachingPatterns();
 
-  function nextMentorMessage(mentorId, timeoutMs = 55_000) {
-    if (mentorQueue.length) return Promise.resolve(mentorQueue.shift());
-    return new Promise((resolvePromise) => {
+  async function nextMentorMessage(mentorId, timeoutMs = 55_000) {
+    if (mentorId !== activeMentorId) return STALE_MENTOR;
+    // A repeated delivery request returns the same attempt, not another item.
+    if (activeMentorTurn) {
+      const active = activeMentorTurn;
+      await active.ready;
+      return activeMentorTurn === active ? active.item : null;
+    }
+    const work = pendingWork()[0];
+    if (work) {
+      work.status = "inflight";
+      work.attempts += 1;
+      delete work.error;
+      // Every delivery gets a new revision fence, including explicit retries.
+      session.mentorRevision += 1;
+      const delivered = structuredClone({
+        ...work.item,
+        canvasContext: session.canvas,
+        mentorTurn: { id: work.turnId, baseRevision: session.mentorRevision },
+      });
+      const active = { ...delivered.mentorTurn, item: delivered };
+      activeMentorTurn = active;
+      active.ready = (async () => {
+        await persist({ bumpRevision: false });
+        delivered.teachingPatterns = await readTeachingPatterns(`${session.topic} ${delivered.message?.content || ""}`);
+        if (courseBrief) delivered.courseBrief = courseBrief;
+        emitRecovery();
+      })();
+      await active.ready;
+      return activeMentorTurn === active ? delivered : STALE_MENTOR;
+    }
+    const signal = await new Promise((resolvePromise) => {
       const waiter = { mentorId, finish: null };
       const finish = (value) => {
         clearTimeout(timer);
@@ -412,15 +535,26 @@ export async function createLearnAnythingServer({
       const timer = setTimeout(() => finish(null), timeoutMs);
       mentorWaiters.push(waiter);
     });
+    return signal === true ? nextMentorMessage(mentorId, timeoutMs) : signal;
   }
 
   async function applyMentorEvent(event) {
     if (!event || typeof event.type !== "string") throw Object.assign(new Error("Mentor event requires type."), { statusCode: 400 });
+    if (["RUN_STARTED", "RUN_FINISHED", "RUN_ERROR"].includes(event.type)) {
+      const work = session.mentorWork.find((entry) => entry.turnId === activeMentorTurn?.id);
+      if ((event.baseRevision !== undefined && event.baseRevision !== activeMentorTurn?.baseRevision)
+        || (work?.attempts > 1 && event.baseRevision === undefined)) {
+        throw httpError("Mentor attempt is no longer active.", 409);
+      }
+    }
     if (event.type === "RUN_STARTED") {
       if (event.turnId && event.turnId !== activeMentorTurn?.id) throw httpError("Mentor turn is no longer active.", 409);
       setMentorState("responding");
     } else if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
-      if (!event.turnId || event.turnId === activeMentorTurn?.id) activeMentorTurn = null;
+      if (event.turnId && activeMentorTurn && event.turnId !== activeMentorTurn.id) throw httpError("Mentor turn is no longer active.", 409);
+      if (!event.turnId || event.turnId === activeMentorTurn?.id) {
+        await failActiveWork(event.type === "RUN_ERROR" ? "Mentor could not complete this request. Retry when ready." : "Mentor finished without a complete answer. Retry when ready.");
+      }
       if (event.type === "RUN_ERROR") {
         session.mentorDiagnostics = [...(session.mentorDiagnostics || []), {
           at: new Date().toISOString(),
@@ -430,7 +564,7 @@ export async function createLearnAnythingServer({
         }].slice(-20);
         await persist({ bumpRevision: false });
       }
-      if (partialMessages.size === 0) setMentorState(mentorQueue.length ? "waiting" : "idle");
+      if (partialMessages.size === 0) setMentorState(pendingWork().length ? "waiting" : "idle");
     } else if (event.type === "TEXT_MESSAGE_START") {
       partialMessages.set(event.messageId, {
         role: event.role || "assistant",
@@ -506,7 +640,7 @@ export async function createLearnAnythingServer({
       if (!taskTitle) throw httpError("Work continuation requires one localized taskTitle.", 400);
       if (!targetComponentId) throw httpError("Work continuation requires one targetComponentId.", 400);
       if (!ACTION_TYPES.includes(actionType)) throw httpError(`Work continuation actionType must be one of: ${ACTION_TYPES.join(", ")}.`, 400);
-      if (!actionMatchesType(text, actionType)) throw httpError("Work continuation text must contain a concrete verb matching actionType.", 400);
+      if (!actionMatchesType(text, actionType)) throw httpError("Work continuation requires nonempty text and a supported actionType.", 400);
       return { focus: value.focus, messages: value.messages, continuation: { kind: continuation.kind, text, taskTitle, targetComponentId, actionType } };
     }
     return { focus: value.focus, messages: value.messages, continuation: { kind: continuation.kind, text } };
@@ -599,15 +733,28 @@ export async function createLearnAnythingServer({
     if (!value || typeof value !== "object" || Array.isArray(value)) throw httpError("Mentor turn payload must be an object.", 400);
     const turnId = typeof value.turnId === "string" ? value.turnId : "";
     if (!turnId) throw httpError("Mentor turn requires turnId.", 400);
-    if ((session.mentorCommittedTurnIds || []).includes(turnId)) return { accepted: true, committed: false, idempotent: true, turnId };
+    const isCommitted = () => (session.mentorCommittedTurnIds || []).includes(turnId) || session.mentorWork.some((work) => work.turnId === turnId && work.status === "committed");
+    if (isCommitted()) {
+      // A simultaneous retry cannot acknowledge an in-memory commit before its
+      // authoritative snapshot has finished writing (or rolled back on error).
+      await persistTail;
+      if (!isCommitted()) throw httpError("Mentor commit did not persist. Retry this request.", 503);
+      await reconcileTeachingPatterns();
+      return { accepted: true, committed: false, idempotent: true, turnId };
+    }
     if (!activeMentorTurn || activeMentorTurn.id !== turnId) throw httpError("Mentor turn is no longer active.", 409);
-    if (!Number.isInteger(value.baseRevision) || value.baseRevision !== activeMentorTurn.baseRevision || value.baseRevision !== session.mentorRevision) {
+    if (!Number.isInteger(value.baseRevision) || value.baseRevision !== activeMentorTurn.baseRevision) {
+      throw httpError("Mentor attempt is no longer active.", 409);
+    }
+    if (value.baseRevision !== session.mentorRevision) {
+      await failActiveWork("Workspace changed while mentor was replying. Retry with your latest work.");
+      setMentorState(pendingWork().length ? "waiting" : "idle");
       throw httpError("Workspace changed while mentor response was prepared.", 409);
     }
     const item = activeMentorTurn.item;
     if (mentorItemIsSuperseded(item, session)) {
-      activeMentorTurn = null;
-      setMentorState(mentorQueue.length ? "waiting" : "idle");
+      await failActiveWork("A newer question arrived. Retry this question if still needed.");
+      setMentorState(pendingWork().length ? "waiting" : "idle");
       throw httpError("Mentor turn was superseded by a newer learner message.", 409);
     }
     const messageText = typeof value.message === "string" ? value.message.trim() : "";
@@ -627,6 +774,11 @@ export async function createLearnAnythingServer({
     }
     const candidateCanvas = validatedCanvasForPayload(payload);
 
+    const milestone = validateMilestone(value.milestone);
+    let pattern;
+    try { pattern = validateTeachingPattern(value.pattern); } catch {
+      throw httpError("Teaching pattern must contain reusable title, description, and valid A2UI messages.", 400);
+    }
     const context = cleanMentorContext(value.context);
     const assistantMessage = {
       id: randomUUID(),
@@ -643,6 +795,15 @@ export async function createLearnAnythingServer({
     if (payload.focus === "work") candidate.activityContractVersion = 1;
     candidate.mentorSessionInitialized = candidate.mentorSessionInitialized || value.initializeSession === true;
     candidate.mentorRevision = (candidate.mentorRevision || 0) + 1;
+    const committedWork = candidate.mentorWork.find((work) => work.turnId === turnId);
+    committedWork.status = "committed";
+    if (pattern) {
+      committedWork.pattern = pattern;
+      committedWork.patternSave = { status: "pending", attempts: 0 };
+    }
+    delete committedWork.item;
+    delete committedWork.error;
+    commitMilestone(candidate, milestone, turnId);
     candidate.mentorCommittedTurnIds = [...(candidate.mentorCommittedTurnIds || []), turnId].slice(-100);
     session = candidate;
     try {
@@ -651,8 +812,14 @@ export async function createLearnAnythingServer({
       if (session === candidate) session = previous;
       throw error;
     }
-    activeMentorTurn = null;
-    setMentorState(mentorQueue.length ? "waiting" : "idle");
+    if (activeMentorTurn?.id === turnId && activeMentorTurn.baseRevision === value.baseRevision) activeMentorTurn = null;
+    // The JSON commit is authoritative. Derived files are repaired on restart
+    // even if a crash interrupts their publication after the committed answer.
+    await reconcileDerivedFiles();
+    await reconcileTeachingPatterns();
+    emitRecovery();
+    if (milestone) broadcast(agEvent("CUSTOM", { name: "learning_progress", value: session.progress }));
+    setMentorState(pendingWork().length ? "waiting" : "idle");
     broadcast(agEvent("CUSTOM", {
       name: "mentor_turn",
       value: {
@@ -668,6 +835,17 @@ export async function createLearnAnythingServer({
       outcome: { type: "success" },
     }));
     return { accepted: true, committed: true, turnId, messageId: assistantMessage.id, revision: session.mentorRevision };
+  }
+
+  let derivedTail = Promise.resolve();
+  async function reconcileDerivedFiles() {
+    const snapshot = structuredClone(session);
+    const task = derivedTail.then(() => reconcileLearningFiles(resolvedSessionDir, snapshot));
+    derivedTail = task.catch(() => {});
+    try { await task; } catch {
+      // Persisted milestones remain authoritative and restart repairs projections.
+      broadcast(agEvent("CUSTOM", { name: "learning_notes_status", value: { status: "repair_on_restart" } }));
+    }
   }
 
   async function serveStatic(pathname, response) {
@@ -717,6 +895,12 @@ export async function createLearnAnythingServer({
 
       if (pathname.startsWith("/api/")) authorizeApi(request, url);
 
+      if (request.method === "GET" && pathname === "/api/patterns") {
+        const patterns = await readTeachingPatterns(url.searchParams.get("query"));
+        sendJson(response, 200, { patterns, teachingLibraryStatus: teachingLibraryStatus() });
+        return;
+      }
+
       if (request.method === "GET" && pathname === "/api/session") {
         sendJson(response, 200, {
           topic: session.topic,
@@ -724,6 +908,8 @@ export async function createLearnAnythingServer({
           canvas: session.canvas,
           continuation: session.continuation || null,
           progress: session.progress,
+          mentorRecovery: recoverySnapshot(session),
+          teachingLibraryStatus: teachingLibraryStatus(),
           assembly: session.assembly,
           mentorModel: session.mentorModel || null,
           mentorSessionInitialized: session.mentorSessionInitialized === true,
@@ -775,6 +961,8 @@ export async function createLearnAnythingServer({
             canvas: canvasEventValue(session.canvas),
             continuation: session.continuation || null,
             progress: session.progress,
+            mentorRecovery: recoverySnapshot(session),
+            teachingLibraryStatus: teachingLibraryStatus(),
             assembly: session.assembly,
             mentorModel: session.mentorModel || null,
             mentorState,
@@ -811,17 +999,33 @@ export async function createLearnAnythingServer({
         const message = { id: randomUUID(), role: "user", content: text, source, surfaceId, ...(context ? { context } : {}), createdAt: new Date().toISOString() };
         session.transcript.push(message);
         setMentorState("waiting");
-        await persist();
+        await enqueueMentor({ type: "user_message", message, ...(source === "work" ? { canvasContext: session.canvas } : {}) }, { bumpRevision: true });
         broadcast(agEvent("TEXT_MESSAGE_START", { messageId: message.id, role: "user", source, surfaceId, ...(context ? { context } : {}) }));
         broadcast(agEvent("TEXT_MESSAGE_CONTENT", { messageId: message.id, delta: text }));
         broadcast(agEvent("TEXT_MESSAGE_END", { messageId: message.id }));
-        enqueueMentor({ type: "user_message", message, ...(source === "work" ? { canvasContext: session.canvas } : {}) });
         sendJson(response, 202, { accepted: true, messageId: message.id });
         return;
       }
+      if (request.method === "POST" && pathname === "/api/mentor/recovery") {
+        const body = await readBody(request);
+        if (!["retry", "dismiss"].includes(body.action)) throw httpError("Recovery action must be retry or dismiss.", 400);
+        const work = session.mentorWork.find((entry) => entry.turnId === body.turnId);
+        if (!work) throw httpError("Mentor request not found.", 404);
+        if (work.status !== "failed") throw httpError("Only failed mentor requests can be retried or dismissed.", 409);
+        work.status = body.action === "retry" ? "pending" : "dismissed";
+        delete work.error;
+        if (body.action === "dismiss") delete work.item;
+        else work.item.retryRequestedAt = new Date().toISOString();
+        await persist({ bumpRevision: false });
+        emitRecovery();
+        if (body.action === "retry") { setMentorState("waiting"); wakeMentor(); }
+        sendJson(response, 202, { accepted: true, mentorRecovery: recoverySnapshot(session) });
+        return;
+      }
+
       if (request.method === "POST" && pathname === "/api/mentor/register") {
         const body = await readBody(request);
-        claimMentor(body.mentorId, body.takeover === true);
+        await claimMentor(body.mentorId, body.takeover === true);
         sendJson(response, 202, { accepted: true, mentorId: activeMentorId });
         return;
       }
@@ -844,7 +1048,7 @@ export async function createLearnAnythingServer({
       if (request.method === "GET" && pathname === "/api/mentor/next") {
         const mentorId = url.searchParams.get("mentorId");
         if (!activeMentorId || activeMentorId !== mentorId || url.searchParams.get("takeover") === "1") {
-          claimMentor(mentorId, url.searchParams.get("takeover") === "1");
+          await claimMentor(mentorId, url.searchParams.get("takeover") === "1");
         }
         const item = await nextMentorMessage(mentorId);
         if (item === STALE_MENTOR) throw httpError("Mentor lease was replaced.", 409);
@@ -853,22 +1057,16 @@ export async function createLearnAnythingServer({
           response.writeHead(204, { "cache-control": "no-store" });
           response.end();
         } else {
-          const delivered = {
-            ...item,
-            mentorTurn: {
-              id: item.mentorTurn?.id || randomUUID(),
-              baseRevision: session.mentorRevision,
-            },
-          };
-          activeMentorTurn = { ...delivered.mentorTurn, item: delivered };
-          sendJson(response, 200, delivered);
+          sendJson(response, 200, item);
         }
         return;
       }
       if (request.method === "POST" && pathname === "/api/interrupt") {
-        if (mentorState === "waiting" && mentorQueue.length) {
-          const queuedIndex = mentorQueue.findLastIndex((item) => item?.type === "user_message");
-          if (queuedIndex >= 0) mentorQueue.splice(queuedIndex, 1);
+        if (mentorState === "waiting" && pendingWork().length) {
+          const work = pendingWork().findLast((entry) => entry.type === "user_message");
+          if (work) { work.status = "dismissed"; delete work.item; }
+          await persist({ bumpRevision: false });
+          emitRecovery();
           setMentorState("idle");
           broadcast(agEvent("RUN_ERROR", { message: "Queued mentor request cancelled.", code: "CANCELLED" }));
           sendJson(response, 202, { accepted: true, queued: true });
@@ -877,7 +1075,7 @@ export async function createLearnAnythingServer({
         if (!activeMentorReady || typeof interruptHandler !== "function") throw httpError("Mentor cannot be interrupted.", 409);
         const interrupted = await interruptHandler();
         if (!interrupted) throw httpError("No active mentor turn to interrupt.", 409);
-        markMentorUnavailable("interrupt");
+        await markMentorUnavailable("interrupt");
         broadcast(agEvent("RUN_ERROR", { message: "Mentor response interrupted.", code: "INTERRUPTED" }));
         sendJson(response, 202, { accepted: true });
         return;
@@ -931,7 +1129,7 @@ export async function createLearnAnythingServer({
           const result = session.runResults?.[runResultKey(session.canvas, action.componentId)];
           if (!component) throw httpError("This code activity is unavailable.", 400);
           if (typeof action.code !== "string" || action.code !== component.value) throw httpError("Run the current code before submitting it.", 409);
-          if (!result) throw httpError("Run the code before submitting it.", 409);
+          if (!result || result.executedCode !== action.code || result.codeHash !== createHash("sha256").update(action.code).digest("hex")) throw httpError("Run the current code before submitting it.", 409);
           const item = {
             type: "execution_result",
             submitted: true,
@@ -944,7 +1142,7 @@ export async function createLearnAnythingServer({
             createdAt: new Date().toISOString(),
           };
           setMentorState("waiting");
-          enqueueMentor(item);
+          await enqueueMentor(item);
           sendJson(response, 202, { accepted: true });
           return;
         }
@@ -966,13 +1164,15 @@ export async function createLearnAnythingServer({
           action,
           createdAt: new Date().toISOString(),
         };
-        enqueueMentor(item);
+        await enqueueMentor(item);
         sendJson(response, 202, { accepted: true, actionId: item.id });
         return;
       }
 
       if (request.method === "POST" && pathname === "/api/run") {
         const body = await readBody(request);
+        if (typeof body.code !== "string" || Buffer.byteLength(body.code) > 100_000) throw httpError("Code must be a string no larger than 100 KB.", 400);
+        const evidence = { executedCode: body.code, codeHash: createHash("sha256").update(body.code).digest("hex") };
         const component = runnableComponent(session.canvas, body.componentId);
         const language = component?.language || body.language;
         const runner = component?.run?.runner || language;
@@ -992,7 +1192,7 @@ export async function createLearnAnythingServer({
         broadcast(agEvent("TOOL_CALL_ARGS", { toolCallId, delta: JSON.stringify({ language }) }));
         broadcast(agEvent("TOOL_CALL_END", { toolCallId }));
         try {
-          const result = await scheduleRun(() => runSelectedCode({
+          const executionResult = await scheduleRun(() => runSelectedCode({
             execution: session.assembly?.execution,
             language,
             runner,
@@ -1004,6 +1204,7 @@ export async function createLearnAnythingServer({
               value: { toolCallId, kind, text },
             })),
           }));
+          const result = { ...executionResult, ...evidence };
           broadcast(agEvent("TOOL_CALL_RESULT", {
             messageId: randomUUID(),
             toolCallId,
@@ -1020,7 +1221,7 @@ export async function createLearnAnythingServer({
           }
           sendJson(response, 200, result);
         } catch (error) {
-          const failedResult = { error: error.message };
+          const failedResult = { error: error.message, ...evidence };
           if (resultKey) {
             session.runResults = { ...(session.runResults || {}), [resultKey]: failedResult };
             const activeComponent = resultKey === runResultKey(session.canvas, body.componentId) ? runnableComponent(session.canvas, body.componentId) : null;
@@ -1029,7 +1230,7 @@ export async function createLearnAnythingServer({
             if (activeComponent) broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, activeComponent) }));
           }
           broadcast(agEvent("RUN_ERROR", { message: error.message, code: "EXECUTION_ERROR" }));
-          sendJson(response, error.statusCode || 400, { error: error.message });
+          sendJson(response, error.statusCode || 400, failedResult);
         }
         return;
       }
@@ -1077,6 +1278,9 @@ export async function createLearnAnythingServer({
       for (const waiter of [...mentorWaiters]) waiter.finish(null);
       for (const finish of [...mentorReadyWaiters]) finish(null);
       mentorReadyWaiters.clear();
+      await persistTail;
+      await derivedTail;
+      await patternTail;
       await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
     },
   };

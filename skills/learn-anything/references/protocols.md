@@ -13,3 +13,5 @@ The work canvas uses an A2UI v0.9 envelope-compatible Learn Anything catalog sub
 Primary reference: https://github.com/a2ui-project/a2ui
 
 AG-UI transports mentor lifecycle, text, tool, state, and custom A2UI events. Reduced profiles must preserve a dynamic browser canvas, learner actions, execution visibility, persistence, and explicit degradation reporting.
+
+Persistent mentors publish complete turns through `/api/mentor/turn`; AG-UI/SSE delivers the committed result to the browser. See `mentor-recovery.md` for durable work, revision fences, execution evidence, and milestones. See `teaching-patterns.md` when automatically saving or adapting a reusable A2UI composition. A renderer catalog defines supported primitives, not fixed course templates.
