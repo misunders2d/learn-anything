@@ -43,10 +43,11 @@ async function browserBinary() {
 }
 
 class ChromeHarness {
-  constructor(binary, profile, launchUrl) {
+  constructor(binary, profile, launchUrl, viewport) {
     this.binary = binary;
     this.profile = profile;
     this.launchUrl = launchUrl;
+    this.viewport = viewport;
     this.chrome = null;
     this.socket = null;
     this.pending = new Map();
@@ -94,6 +95,9 @@ class ChromeHarness {
     });
     await this.call("Runtime.enable");
     await this.call("Page.enable");
+    await this.call("Emulation.setDeviceMetricsOverride", {
+      ...this.viewport, deviceScaleFactor: 1, mobile: false,
+    });
     await waitFor(() => this.evaluate("Boolean(document.querySelector('.workspace'))"), "workspace mount", 15_000);
   }
 
@@ -202,14 +206,20 @@ const firstMessage = option(args, "--message") || "I am completely new to Rust. 
 const allowChat = args.includes("--allow-chat");
 const currentWork = args.includes("--current-work");
 const mentorTurnOnly = args.includes("--mentor-turn-only");
+const retryFailed = args.includes("--retry-failed");
 const runnerModel = option(args, "--runner-model");
 const interruptWith = option(args, "--interrupt-with");
 const expectedInterruptText = option(args, "--expect");
 const workQuestion = option(args, "--work-question");
+const chooseOption = option(args, "--choose-option");
+const codeFile = option(args, "--code-file");
 const unanchoredWorkQuestion = args.includes("--unanchored-work-question");
 const screenshotPath = option(args, "--screenshot");
+const viewportMatch = (option(args, "--viewport", "1280x800") || "").match(/^(\d{3,4})x(\d{3,4})$/);
+if (!viewportMatch) throw new Error("--viewport must be WIDTHxHEIGHT in pixels.");
+const viewport = { width: Number(viewportMatch[1]), height: Number(viewportMatch[2]) };
 const profile = await mkdtemp(join(tmpdir(), "learn-anything-live-browser-"));
-const browser = new ChromeHarness(await browserBinary(), profile, `${url}/#token=${token}`);
+const browser = new ChromeHarness(await browserBinary(), profile, `${url}/#token=${token}`, viewport);
 const checks = [];
 
 async function readSessionApi(path) {
@@ -295,7 +305,18 @@ try {
 
   if (runnerModel) await selectRunnerModel(runnerModel, state);
 
-  if (!currentWork) {
+  if (retryFailed) {
+    const before = (await readSessionApi("/api/session")).transcript.length;
+    await browser.click("Array.from(document.querySelectorAll('.mentor-recovery .recovery-actions button')).find((button) => button.textContent.trim() === 'Retry')");
+    await waitFor(async () => {
+      const saved = await readSessionApi("/api/session");
+      return saved.transcript.length > before && saved.transcript.at(-1)?.role === "assistant";
+    }, "recovered mentor reply", 180_000);
+    state = await browser.evaluate(browserState());
+    checks.push("clicked-retry-and-recovered-saved-turn");
+  }
+
+  if (!currentWork && !retryFailed) {
     await send(firstMessage);
     state = await browser.evaluate(browserState());
     assert.ok(state.messages.at(-1).length > 40);
@@ -321,6 +342,27 @@ try {
     if (firstInteraction && !mentorTurnOnly) {
       assert.ok(firstInteraction.top >= 0 && firstInteraction.bottom <= firstInteraction.viewport, "first required interaction must be visible without scrolling");
       checks.push("first-required-interaction-visible-without-scrolling");
+    }
+    if (chooseOption) {
+      const before = (await readSessionApi("/api/session")).transcript.length;
+      const choice = `Array.from(document.querySelectorAll('.interaction-list button')).find((button) => button.textContent.trim() === ${JSON.stringify(chooseOption)})`;
+      await browser.click(choice);
+      await waitFor(async () => {
+        const saved = await readSessionApi("/api/session");
+        return saved.transcript.length > before && saved.transcript.at(-1)?.role === "assistant";
+      }, "mentor response to visible choice", 180_000);
+      state = await browser.evaluate(browserState());
+      checks.push("clicked-subject-choice-and-received-mentor-reply");
+    }
+    if (codeFile) {
+      const source = await readFile(resolve(codeFile), "utf8");
+      await browser.click("document.querySelector('.code-fallback')");
+      await browser.call("Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+      await browser.call("Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+      await browser.call("Input.insertText", { text: source });
+      await waitFor(() => browser.evaluate(`document.querySelector('.code-fallback')?.value === ${JSON.stringify(source)}`), "edited browser code", 10_000);
+      checks.push("edited-code-in-browser");
+      state = await browser.evaluate(browserState());
     }
     if (workQuestion) {
       if (!unanchoredWorkQuestion) {

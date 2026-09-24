@@ -230,7 +230,7 @@ body[data-return-work="1"] .stage-header .model-options {
 .surface-toolbar { display: flex; min-height: 3.2rem; align-items: center; justify-content: space-between; border-bottom: 1px solid #31343c; padding: 0.55rem 0.75rem 0.55rem 1rem; color: #a8afbd; }
 .surface-toolbar > span { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; }
 .editor-shell { min-height: 0; }
-.code-fallback { width: 100%; min-height: 8.8rem; resize: none !important; border: 0; background: #171a21 !important; color: #f3f5f9 !important; padding: 1.1rem !important; font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace !important; font-size: 0.88rem !important; line-height: 1.65 !important; outline: 0; caret-color: #88a7ff; }
+.code-fallback { width: 100%; min-height: 8.8rem; max-height: 12.5rem; overflow-y: auto; resize: none !important; border: 0; background: #171a21 !important; color: #f3f5f9 !important; padding: 1.1rem !important; font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace !important; font-size: 0.88rem !important; line-height: 1.65 !important; outline: 0; caret-color: #88a7ff; }
 .execution-result { border-top: 1px solid #31343c; background: #111319; padding: 1rem; color: #eef1f6; animation: result-in 160ms ease-out; }
 .execution-result .data-surface { color: #eef1f6; }
 .execution-result .data-surface figcaption { color: #9ba5b6; }

@@ -389,7 +389,17 @@ function CodeBlock({ component, onSubmitToMentor }) {
   }, [component.value, draftKey]);
   useEffect(() => setResult(component.lastResult || null), [component.lastResult]);
   useEffect(() => {
-    if (result) requestAnimationFrame(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+    if (result) requestAnimationFrame(() => {
+      const output = resultRef.current;
+      output?.scrollIntoView({ behavior: "auto", block: "nearest" });
+      const stage = output?.closest(".stage-scroll");
+      const cue = stage?.querySelector(".course-continuation.is-current-step");
+      const toolbar = output?.closest(".playground-surface")?.querySelector(".surface-toolbar");
+      if (stage && cue && toolbar) {
+        const overlap = cue.getBoundingClientRect().bottom + 8 - toolbar.getBoundingClientRect().top;
+        if (overlap > 0) stage.scrollTop -= overlap;
+      }
+    });
   }, [result]);
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
