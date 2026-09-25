@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  HOST_ONLY_COMPONENT_KEYS,
   applyA2uiMessages,
   applyParameterFrame,
   createInitialCanvas,
@@ -336,7 +337,10 @@ test("mentor turn commit publishes transcript, canvas, continuation, and complet
         ],
       }),
     }, mentorId);
-    assert.equal(invalid.response.status, 400);
+    // Invalid candidates get bounded correction attempts on the same turn.
+    assert.equal(invalid.response.status, 422);
+    assert.equal(invalid.body.retryable, true);
+    assert.equal(invalid.body.nextAttempt, 2);
     const afterInvalid = (await request(address, "/api/session")).body;
     assert.deepEqual(afterInvalid.transcript, before.transcript);
     assert.deepEqual(afterInvalid.canvas, before.canvas);
@@ -961,5 +965,55 @@ test("parameter persistence updates the whole canvas without waking the mentor",
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("data patches create missing arrays and preserve escaped pointer keys", () => {
+  const after = applyA2uiMessages(createInitialCanvas("Nested data"), [
+    { version: "v0.9", updateDataModel: { surfaceId: "lesson", path: "/groups/0/points/0/0", value: 7 } },
+    { version: "v0.9", updateDataModel: { surfaceId: "lesson", path: "/a~1b/~0key/0", value: "escaped" } },
+  ]);
+  assert.deepEqual(after.surfaces.lesson.dataModel.groups, [{ points: [[7]] }]);
+  assert.deepEqual(after.surfaces.lesson.dataModel["a/b"], { "~key": ["escaped"] });
+  for (const key of ["__proto__", "prototype", "constructor"]) {
+    assert.throws(() => applyA2uiMessages(after, [{ version: "v0.9", updateDataModel: { surfaceId: "lesson", path: `/groups/0/${key}/x`, value: true } }]), /blocked segment/);
+  }
+  assert.throws(() => applyA2uiMessages(after, [{ version: "v0.9", updateDataModel: { surfaceId: "lesson", path: "/groups/0/points/0/0/label", value: "oops" } }]), /traverse objects or arrays/);
+  assert.throws(() => applyA2uiMessages(after, [{ version: "v0.9", updateDataModel: { surfaceId: "lesson", path: "/groups/1000000000/label", value: "huge" } }]), /exceeds 1 MB/);
+  const rootArray = applyA2uiMessages(createInitialCanvas("Array root"), [
+    { version: "v0.9", updateDataModel: { surfaceId: "lesson", path: "/", value: [{ label: "A" }] } },
+    { version: "v0.9", updateDataModel: { surfaceId: "lesson", path: "/0/label", value: "B" } },
+  ]);
+  assert.deepEqual(rootArray.surfaces.lesson.dataModel, [{ label: "B" }]);
+});
+
+test("nested array patches preserve bound Plot series and sibling data", () => {
+  const before = reactiveCanvas();
+  const after = applyA2uiMessages(before, [{
+    version: "v0.9",
+    updateDataModel: { surfaceId: "lesson", path: "/series/0/label", value: "B" },
+  }]);
+  assert.deepEqual(after.surfaces.lesson.dataModel.series, [{ id: "p", label: "B", points: [[0, 0], [1, 1]] }]);
+  assert.equal(before.surfaces.lesson.dataModel.series[0].label, "P(x)");
+});
+
+test("parameter frames report the snapped value in the control and data model", () => {
+  const before = reactiveCanvas();
+  const after = applyParameterFrame(before, "controls", "phase", 0.6);
+  assert.equal(after.surfaces.lesson.components.controls.controls[0].value, 0.5);
+  assert.equal(after.surfaces.lesson.dataModel.phase, 0.5);
+  assert.equal(after.surfaces.lesson.dataModel.equation, "P=1/2");
+  assert.equal(before.surfaces.lesson.components.controls.controls[0].value, 0);
+});
+
+test("mentor component messages reject host-only execution fields even if overwritten later", () => {
+  const before = createInitialCanvas("Execution evidence");
+  assert.deepEqual(HOST_ONLY_COMPONENT_KEYS, ["lastResult", "executedCode", "codeHash"]);
+  assert.ok(Object.isFrozen(HOST_ONLY_COMPONENT_KEYS));
+  for (const key of ["lastResult", "executedCode", "codeHash"]) {
+    const components = [{ id: "root", component: "Column", children: ["code"] }, { id: "code", component: "Code", value: "1 + 1", [key]: null }];
+    const message = { version: "v0.9", updateComponents: { surfaceId: "lesson", components } };
+    assert.throws(() => applyA2uiMessages(before, [message]), /host-only/);
+    assert.throws(() => applyA2uiMessages(before, [message, { version: "v0.9", deleteSurface: { surfaceId: "lesson" } }]), /host-only/);
   }
 });

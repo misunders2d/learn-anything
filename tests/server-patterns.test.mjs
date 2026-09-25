@@ -101,8 +101,6 @@ test("nominated dynamic patterns save locally and become bounded context in anot
 test("invalid or learner-state nominations leave transcript, canvas, revision, and active turn intact", async (t) => {
   const f = await fixture(t);
   const course = await f.createCourse("Architecture validation");
-  const item = await course.next("Show a composition");
-  const before = (await course.request("/api/session")).body;
   const privatePattern = pattern();
   privatePattern.messages[1].updateComponents.components[1].lastResult = { stdout: "learner output" };
   const pointerPattern = pattern();
@@ -110,15 +108,46 @@ test("invalid or learner-state nominations leave transcript, canvas, revision, a
   const answeredPattern = pattern();
   answeredPattern.messages[1].updateComponents.components[1] = { id: "prompt", component: "Quiz", question: "Which route?", options: [{ id: "a", label: "A" }], selectedOptionId: "a" };
   for (const invalid of [{ title: "incomplete" }, privatePattern, pointerPattern, answeredPattern, { ...pattern(), title: "x".repeat(121) }]) {
+    const item = await course.next("Show a composition");
+    const before = (await course.request("/api/session")).body;
     const result = await course.request("/api/mentor/turn", reply(item, invalid), true);
-    assert.equal(result.status, 400);
+    assert.equal(result.status, 422);
+    assert.equal(result.body.retryable, true);
+    assert.equal(result.body.validationError.path, "/pattern");
     const after = (await course.request("/api/session")).body;
     assert.deepEqual(after.canvas, before.canvas);
     assert.deepEqual(after.transcript, before.transcript);
     assert.equal(after.mentorRevision, before.mentorRevision);
     assert.equal(after.mentorRecovery[0].status, "inflight");
+    const corrected = (await course.request("/api/mentor/next?mentorId=pattern-test-mentor")).body;
+    assert.equal(corrected.mentorTurn.id, item.mentorTurn.id);
+    assert.equal(corrected.mentorTurn.baseRevision, item.mentorTurn.baseRevision);
+    assert.equal(corrected.mentorTurn.attempt, 2);
+    assert.equal((await course.request("/api/mentor/turn", reply(corrected), true)).status, 201);
   }
-  assert.equal((await course.request("/api/mentor/turn", reply(item, pattern()), true)).status, 201);
+});
+
+test("invalid nominations exhaust only after the second correction without registry writes", async (t) => {
+  const f = await fixture(t);
+  const course = await f.createCourse("Pattern exhaustion");
+  let item = await course.next("Show a composition");
+  const before = (await course.request("/api/session")).body;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await course.request("/api/mentor/turn", { ...reply(item, { title: "incomplete" }), attempt }, true);
+    assert.equal(result.status, attempt < 3 ? 422 : 400);
+    assert.equal(result.body.retryable, attempt < 3);
+    assert.equal(result.body.attempt, attempt);
+    const after = (await course.request("/api/session")).body;
+    assert.deepEqual(after.canvas, before.canvas);
+    assert.deepEqual(after.transcript, before.transcript);
+    assert.deepEqual(after.progress, before.progress);
+    assert.equal(after.mentorRevision, before.mentorRevision);
+    assert.equal(after.mentorRecovery[0].status, attempt < 3 ? "inflight" : "failed");
+    assert.deepEqual((await course.request("/api/patterns")).body.patterns, []);
+    if (attempt < 3) item = (await course.request("/api/mentor/next?mentorId=pattern-test-mentor")).body;
+  }
+  assert.equal((await course.request("/api/mentor/turn", reply(item, pattern()), true)).status, 409);
+  assert.deepEqual((await course.saved()).mentorDiagnostics.map((entry) => entry.attempt), [1, 2, 3]);
 });
 
 test("constructor brief reaches the independent runner without changing its model", async (t) => {

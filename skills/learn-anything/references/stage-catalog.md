@@ -42,7 +42,7 @@ Post a flow focus plus A2UI v0.9 messages:
 
 Set surface data-model `direction` to `ltr`, `rtl`, or `auto`; invalid values fail validation. Use `rtl` when primary learner-facing content reads right-to-left. Browser renderer applies it to active work surface while code/editor artifacts stay left-to-right.
 
-Every surface uses a flat adjacency list. The root component has id `root`; `Column` and `Row` reference child ids. Sending an existing component id updates it. Learner-facing display properties—including nested Plot axes and series, Math expressions, Table data, and Figure content—can reference `updateDataModel` state with the exact binding object `{ "path": "/field" }`. Component ids/types, layout children, execution configuration, and `Params` control definitions are literal; frames update the data model that display properties bind to.
+Every surface uses a flat adjacency list. The root component has id `root`; `Column` and `Row` reference child ids. Sending an existing component id updates it. Learner-facing display properties—including nested Plot axes and series, Math expressions, Table data, and Figure content—can reference `updateDataModel` state with the exact binding object `{ "path": "/field" }`. Component ids/types, layout children, execution configuration, and `Params` control definitions are literal; frames update the data model that display properties bind to. A data-model path may index an array element, such as `/series/0/label`, to change one element without resending the array. Never send `lastResult`, `executedCode`, or `codeHash`; the host records that execution evidence from the exact code a learner runs.
 
 Learning catalog components:
 

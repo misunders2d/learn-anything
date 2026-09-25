@@ -216,10 +216,12 @@ async function main() {
           initializeSession: !before.mentorSessionInitialized,
         });
       } catch (error) {
-        const rejectedLocally = error instanceof MentorCandidateError;
-        const rejectedByHost = error instanceof MentorHttpError && error.status === 400;
-        if (!rejectedLocally && !rejectedByHost) throw error;
-        turn = await rpc.prompt(`Your structured browser candidate was rejected before publication: ${error.body?.error || error.message}\nCorrect the candidate. Preserve the useful learner answer. Return one concrete localized next action for work. Call complete_mentor_turn exactly once.`);
+        // Host rejections are corrected only by the host: a retryable one is a
+        // 422 redelivered through /api/mentor/next with validationError, and a
+        // final 400 has already settled the turn. Only a candidate the adapter
+        // itself cannot compose (never seen by the host) is surfaced here once.
+        if (!(error instanceof MentorCandidateError)) throw error;
+        turn = await rpc.prompt(`Your structured browser candidate was rejected before publication: ${error.message}\nCorrect the candidate. Preserve the useful learner answer. Return one concrete localized next action for work. Call complete_mentor_turn exactly once.`);
         candidate = candidateFromPiTurn(turn);
         const current = await requestJson(url, "/api/session", token);
         await commitTurn({

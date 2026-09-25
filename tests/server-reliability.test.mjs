@@ -160,7 +160,7 @@ test("run A, edit B, refresh, submit B is rejected until B runs with exact serve
   await f.restart();
   const component = (await f.snapshot()).canvas.surfaces.exercise.components.code;
   assert.equal(component.value, b);
-  assert.equal(component.lastResult.executedCode, a);
+  assert.equal((await f.snapshot()).runResults["exercise:code"].executedCode, a);
   assert.equal((await f.request("/api/action", { action: "submit_code", componentId: "code", code: b })).status, 409);
   const runB = await f.request("/api/run", { componentId: "code", code: b });
   assert.equal(runB.body.executedCode, b);
@@ -179,7 +179,7 @@ test("failed runner records carry exact code evidence too", async (t) => {
   assert.ok(result.status >= 400);
   assert.equal(result.body.executedCode, "bad runner");
   assert.equal(result.body.codeHash, createHash("sha256").update("bad runner").digest("hex"));
-  assert.equal((await f.snapshot()).canvas.surfaces.exercise.components.code.lastResult.codeHash, result.body.codeHash);
+  assert.equal((await f.snapshot()).runResults["exercise:code"].codeHash, result.body.codeHash);
 });
 
 test("concurrent learner edit retains draft and question; explicit retry uses fresh context", async (t) => {
@@ -204,7 +204,7 @@ test("concurrent learner edit retains draft and question; explicit retry uses fr
   assert.deepEqual(snapshot.mentorRecovery, []);
 });
 
-test("localized prose accepts structural actions and rejects invalid target and type", async (t) => {
+test("localized prose accepts structural actions and rejects invalid targets while actionType stays advisory", async (t) => {
   const f = await fixture(t);
   await codeActivity(f);
   for (const text of ["Ejecuta el código y comprueba el resultado.", "Führe den Code aus und prüfe die Ausgabe.", "コードを実行して出力を確認してください。"] ) {
@@ -213,7 +213,7 @@ test("localized prose accepts structural actions and rejects invalid target and 
     await f.restart();
     assert.equal((await f.snapshot()).continuation.text, text);
     assert.deepEqual((await f.snapshot()).mentorRecovery, []);
-    for (const patch of [{ targetComponentId: "missing" }, { targetComponentId: "root" }, { actionType: "answer" }, { actionType: "invented" }, { text: " " }]) {
+    for (const patch of [{ targetComponentId: "missing" }, { targetComponentId: "root" }, { text: " " }]) {
       assert.equal((await f.request("/api/a2ui", { ...payload, continuation: { ...payload.continuation, ...patch } }, true)).status, 400);
     }
   }
@@ -224,7 +224,7 @@ test("milestone commits deduplicate; progress, journal, and notes reconstruct af
   await f.request("/api/message", { text: "I can explain closures now" });
   const item = await f.next();
   const milestone = { title: "Closures", takeaway: "Functions retain lexical scope.", nextStep: "Compare two counters.", concepts: ["lexical scope"], misconceptions: ["Closure is not a copied value"] };
-  assert.equal((await f.request("/api/mentor/turn", reply(item, { milestone: { title: "broken" } }), true)).status, 400);
+  assert.equal((await f.request("/api/mentor/turn", reply(item, { milestone: { title: "broken" } }), true)).status, 422);
   assert.equal((await f.snapshot()).progress.milestone, 0);
   assert.equal((await f.request("/api/mentor/turn", reply(item, { milestone }), true)).status, 201);
   assert.equal((await f.request("/api/mentor/turn", reply(item, { milestone }), true)).body.idempotent, true);

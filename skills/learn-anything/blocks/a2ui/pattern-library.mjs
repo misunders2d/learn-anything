@@ -2,10 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, lstat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { COMPONENT_NAMES } from "./catalog.mjs";
 import { applyA2uiMessages, replayA2uiMessages, resolveDataBinding } from "./state.mjs";
 
 const MAX_BYTES = 24_000;
-const COMPONENTS = new Set(["Column", "Row", "Markdown", "Callout", "Code", "Table", "Passage", "Figure", "Math", "Plot", "Params", "Mermaid", "Quiz", "Checklist"]);
+const COMPONENTS = new Set(COMPONENT_NAMES);
 const PRIVATE_KEYS = new Set(["lastResult", "executedCode", "codeHash", "accessToken", "transcript", "agentSessionId", "mentorSessionId", "mentorWork", "security", "password", "apiKey", "privateKey"]);
 const invalid = (message) => { throw Object.assign(new Error(`Teaching pattern: ${message}`), { statusCode: 400 }); };
 

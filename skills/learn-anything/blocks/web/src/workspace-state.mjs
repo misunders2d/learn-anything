@@ -1,3 +1,4 @@
+import { isInteractiveComponent } from "../../a2ui/catalog.mjs";
 import { resolveDataBinding } from "../../a2ui/state.mjs";
 
 // Legacy output without execution evidence must be rerun before submission.
@@ -30,9 +31,8 @@ export function canvasComponents(canvas) {
 export function resolveFocus(canvas) {
   if (canvas?.focus === "chat" || canvas?.focus === "work") return canvas.focus;
   const interactive = canvasComponents(canvas).some((component) => (
-    (component?.component === "Code" && component.runnable !== false)
-    || component?.component === "Quiz"
-    || component?.component === "Checklist"
+    isInteractiveComponent(component?.component)
+    && !(component.component === "Code" && component.runnable === false)
   ));
   return interactive ? "work" : "chat";
 }
@@ -86,18 +86,18 @@ export function workTaskKey(canvas) {
 export function connectionIssueFor(error) {
   if (error?.status === 401) {
     return {
-      title: "This tab belongs to an earlier workspace",
-      message: "Use the newest Learn Anything tab opened by your coding agent. Your saved work is still safe.",
+      titleKey: "connection.earlier.title",
+      messageKey: "connection.earlier.message",
     };
   }
   if (error instanceof TypeError || /failed to fetch/i.test(error?.message || "")) {
     return {
-      title: "Workspace stopped",
-      message: "Your work is saved locally. Restart the workspace from your coding agent, then reload this page.",
+      titleKey: "connection.stopped.title",
+      messageKey: "connection.restart.message",
     };
   }
   return {
-    title: "Connection lost",
-    message: "Your work is saved locally. Restart the workspace from your coding agent, then reload this page.",
+    titleKey: "connection.lost.title",
+    messageKey: "connection.restart.message",
   };
 }

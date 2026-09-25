@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { translate } from "../skills/learn-anything/blocks/web/src/i18n.mjs";
 import {
   appendPartialDelta,
   createPartialMessage,
@@ -139,7 +140,23 @@ test("rescue stays open during a question, then yields to the mentor's next focu
 
 test("failed fetch reports a stopped workspace instead of raw network text", () => {
   assert.deepEqual(connectionIssueFor(new TypeError("Failed to fetch")), {
-    title: "Workspace stopped",
-    message: "Your work is saved locally. Restart the workspace from your coding agent, then reload this page.",
+    titleKey: "connection.stopped.title",
+    messageKey: "connection.restart.message",
   });
+});
+
+test("all connection failures provide localizable titles and recovery instructions", () => {
+  for (const [error, title] of [
+    [{ status: 401 }, "connection.earlier.title"],
+    [new TypeError("Failed to fetch"), "connection.stopped.title"],
+    [new Error("Failed to fetch"), "connection.stopped.title"],
+    [new Error("offline"), "connection.lost.title"],
+  ]) {
+    const issue = connectionIssueFor(error);
+    assert.equal(issue.titleKey, title);
+    for (const key of [issue.titleKey, issue.messageKey]) {
+      assert.notEqual(translate("en", key), key);
+      assert.notEqual(translate("ru", key), translate("en", key));
+    }
+  }
 });

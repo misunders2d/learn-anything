@@ -1,3 +1,5 @@
+import { componentSupportsAction } from "./a2ui/catalog.mjs";
+
 const ENGLISH_GENERIC_ACTIONS = [
   /^(?:continue|proceed|next|keep going|go on)(?:\s+(?:with|to|the|this|your|visible|current|activity|lesson|course|work|mentor|guidance|applying))*$/,
   /^complete\s+(?:the\s+)?(?:next\s+)?(?:unfinished\s+)?(?:step|activity)(?:\s+in\s+the\s+(?:visible|current)\s+activity)?(?:\s+using\s+the\s+mentor(?:'s)?\s+guidance)?$/,
@@ -27,21 +29,6 @@ export function isGenericAction(value) {
   return [...ENGLISH_GENERIC_ACTIONS, ...CYRILLIC_GENERIC_ACTIONS].some((pattern) => pattern.test(normalized));
 }
 
-const COMPONENT_ACTIONS = {
-  Code: new Set(["run", "edit", "inspect", "submit"]),
-  Quiz: new Set(["answer", "inspect"]),
-  Checklist: new Set(["answer", "inspect"]),
-  Params: new Set(["adjust", "inspect"]),
-  Markdown: new Set(["read", "inspect"]),
-  Callout: new Set(["read", "inspect"]),
-  Passage: new Set(["read", "inspect"]),
-  Figure: new Set(["read", "inspect"]),
-  Math: new Set(["read", "inspect"]),
-  Plot: new Set(["read", "inspect", "adjust"]),
-  Table: new Set(["read", "inspect"]),
-  Mermaid: new Set(["read", "inspect"]),
-};
-
 export const ACTION_TYPES = Object.freeze(["run", "edit", "answer", "adjust", "read", "inspect", "submit"]);
 
 export function actionMatchesType(value, actionType) {
@@ -49,9 +36,9 @@ export function actionMatchesType(value, actionType) {
   return ACTION_TYPES.includes(actionType) && Boolean(normalizedContinuationText(value));
 }
 
+// The catalog owns which actions each component type supports.
 export function actionSupportsComponent(actionType, componentType) {
-  const supported = COMPONENT_ACTIONS[componentType];
-  return supported ? supported.has(actionType) : ["inspect", "read"].includes(actionType);
+  return componentSupportsAction(componentType, actionType);
 }
 
 export function concreteAction(value, { fallback = "", max = 280 } = {}) {

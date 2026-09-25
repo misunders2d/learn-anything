@@ -12,12 +12,14 @@ import { assemblyBlockVersionMismatch, loadBlockCatalog } from "../adapters/runt
 import { runSelectedCode, selectedRunners } from "../execution/runner.mjs";
 import {
   A2UI_VERSION,
+  HOST_ONLY_COMPONENT_KEYS,
   activeSurface,
   applyA2uiMessages,
   applyParameterFrame,
   canvasEventValue,
   surfaceComponents,
 } from "../a2ui/state.mjs";
+import { isLayoutComponent } from "../a2ui/catalog.mjs";
 
 const serverDir = dirname(fileURLToPath(import.meta.url));
 const defaultKitRoot = resolve(serverDir, "../..");
@@ -98,14 +100,20 @@ function canvasComponent(canvas, componentId) {
 
 function updateCanvasFromAction(canvas, action) {
   const component = canvasComponent(canvas, action.componentId);
-  if (!component) return null;
+  const interaction = ["quiz_answer", "checklist_toggle", "code_change", "parameter_change"].includes(action.action);
+  const unsupported = () => { throw Object.assign(httpError("The target does not support this interaction.", 400), { code: "UNSUPPORTED_INTERACTION", path: "/action" }); };
+  if (!component) {
+    if (interaction) unsupported();
+    return null;
+  }
   if (action.action === "quiz_answer" && component.component === "Quiz") {
+    if (!component.options?.some((option) => option.id === action.optionId)) unsupported();
     component.selectedOptionId = action.optionId;
     return component;
   }
   if (action.action === "checklist_toggle" && component.component === "Checklist" && Array.isArray(component.items)) {
     const item = component.items.find((candidate) => candidate.id === action.itemId);
-    if (!item) return null;
+    if (!item || typeof action.done !== "boolean") unsupported();
     item.done = Boolean(action.done);
     return component;
   }
@@ -116,10 +124,11 @@ function updateCanvasFromAction(canvas, action) {
   }
   if (action.action === "parameter_change" && component.component === "Params" && Array.isArray(component.controls)) {
     const next = applyParameterFrame(canvas, action.componentId, action.controlId, action.value);
-    if (!next) return null;
+    if (!next) unsupported();
     Object.assign(canvas, next);
     return canvasComponent(canvas, action.componentId);
   }
+  if (interaction) unsupported();
   return null;
 }
 
@@ -139,14 +148,48 @@ function runResultKey(canvas, componentId) {
   return activeSurface(canvas)?.id && componentId ? `${activeSurface(canvas).id}:${componentId}` : null;
 }
 
-function hydrateRunResults(canvas, results = {}) {
-  const surface = activeSurface(canvas);
-  if (!surface) return canvas;
-  for (const component of Object.values(surface.components || {})) {
-    const key = runResultKey(canvas, component?.id);
-    if (key && results[key]) component.lastResult = results[key];
+// Results travel separately from the size-validated canvas. Exact execution
+// evidence is retained for every key; only output text is abbreviated.
+export const MAX_RUN_RESULT_KEYS = 32;
+const RESULT_EXCERPT_BYTES = 8_000;
+function outputExcerpt(value) {
+  if (typeof value !== "string" || Buffer.byteLength(value) <= RESULT_EXCERPT_BYTES) return value;
+  const bytes = Buffer.from(value);
+  return `${bytes.subarray(0, 3_900).toString("utf8")}\n… output excerpt …\n${bytes.subarray(-3_900).toString("utf8")}`;
+}
+
+function compactRunResult(value) {
+  const compact = { ...value };
+  for (const key of ["stdout", "stderr", "error"]) {
+    if (typeof compact[key] === "string") compact[key] = outputExcerpt(compact[key]);
   }
-  return canvas;
+  // SQL results can also contain the full output in cells. Do not retain an
+  // unbounded second copy of old output through the structured table field.
+  if (compact.table && Buffer.byteLength(JSON.stringify(compact.table)) > RESULT_EXCERPT_BYTES) {
+    delete compact.table;
+    compact.stdout = outputExcerpt(`${compact.stdout || ""}\n[Earlier table output omitted; run again to inspect all rows.]`);
+  }
+  return compact;
+}
+
+function retainRunResult(session, key, result) {
+  const entries = Object.entries(session.runResults || {}).filter(([existing]) => existing !== key);
+  session.runResults = Object.fromEntries([
+    ...entries.slice(-(MAX_RUN_RESULT_KEYS - 1)).map(([existing, value]) => [existing, compactRunResult(value)]),
+    [key, result],
+  ]);
+}
+
+function migrateRunResults(session) {
+  const results = { ...(session.runResults || {}) };
+  for (const [surfaceId, surface] of Object.entries(session.canvas.surfaces || {})) {
+    for (const component of Object.values(surface.components || {})) {
+      if (component.lastResult) results[`${surfaceId}:${component.id}`] ??= component.lastResult;
+      for (const key of HOST_ONLY_COMPONENT_KEYS) delete component[key];
+    }
+  }
+  session.runResults = {};
+  for (const [key, value] of Object.entries(results).slice(-MAX_RUN_RESULT_KEYS)) retainRunResult(session, key, value);
 }
 
 function componentDelta(canvas, component) {
@@ -205,20 +248,13 @@ export async function createLearnAnythingServer({
   if (assemblyBlockVersionMismatch(session, catalog)) {
     throw new Error("Session requires explicit migration. Run learn-anything create for this topic with --migrate.");
   }
+  migrateRunResults(session);
   const savedActivitySurface = session.canvas?.activeSurfaceId ? session.canvas.surfaces?.[session.canvas.activeSurfaceId] : null;
   const savedActivityTarget = savedActivitySurface?.components?.[session.continuation?.targetComponentId];
   const activityNeedsRepair = session.canvas?.focus === "work"
-    && (session.activityContractVersion !== 1
-      || session.continuation?.kind !== "action"
-      || !session.continuation?.taskTitle
-      || !session.continuation?.targetComponentId
-      || !ACTION_TYPES.includes(session.continuation?.actionType)
+    && (!session.continuation?.text?.trim()
       || !savedActivityTarget
-      || ["Column", "Row"].includes(savedActivityTarget?.component)
-      || !actionMatchesType(session.continuation?.text, session.continuation?.actionType)
-      || !actionSupportsComponent(session.continuation?.actionType, savedActivityTarget?.component)
-      || isGenericAction(session.continuation?.text)
-      || actionRepeatsVisibleState(session.continuation?.text, session.canvas, session.continuation?.targetComponentId));
+      || isLayoutComponent(savedActivityTarget?.component));
   if (activityNeedsRepair) {
     session.continuation = null;
   }
@@ -498,19 +534,22 @@ export async function createLearnAnythingServer({
     if (activeMentorTurn) {
       const active = activeMentorTurn;
       await active.ready;
+      active.suppressValidationFailure = false;
       return activeMentorTurn === active ? active.item : null;
     }
     const work = pendingWork()[0];
     if (work) {
       work.status = "inflight";
       work.attempts += 1;
+      work.validationAttempt ||= 1;
       delete work.error;
       // Every delivery gets a new revision fence, including explicit retries.
       session.mentorRevision += 1;
       const delivered = structuredClone({
         ...work.item,
         canvasContext: session.canvas,
-        mentorTurn: { id: work.turnId, baseRevision: session.mentorRevision },
+        mentorTurn: { id: work.turnId, baseRevision: session.mentorRevision, attempt: work.validationAttempt },
+        ...(work.validationError ? { validationError: work.validationError } : {}),
       });
       const active = { ...delivered.mentorTurn, item: delivered };
       activeMentorTurn = active;
@@ -547,12 +586,23 @@ export async function createLearnAnythingServer({
         throw httpError("Mentor attempt is no longer active.", 409);
       }
     }
+    // Legacy adapters report RUN_ERROR after a non-2xx commit. The rejected
+    // candidate is still being corrected; keep that provider boundary private.
+    if (["RUN_ERROR", "RUN_FINISHED"].includes(event.type) && activeMentorTurn?.suppressValidationFailure
+      && event.turnId === activeMentorTurn.id && event.baseRevision === activeMentorTurn.baseRevision) {
+      activeMentorTurn.suppressValidationFailure = false;
+      return { accepted: true, correcting: true };
+    }
     if (event.type === "RUN_STARTED") {
       if (event.turnId && event.turnId !== activeMentorTurn?.id) throw httpError("Mentor turn is no longer active.", 409);
+      if (activeMentorTurn?.runId) return { accepted: true, correcting: true };
+      if (activeMentorTurn) activeMentorTurn.runId = event.runId || randomUUID();
+      event = { ...event, runId: activeMentorTurn?.runId || event.runId };
       setMentorState("responding");
     } else if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") {
       if (event.turnId && activeMentorTurn && event.turnId !== activeMentorTurn.id) throw httpError("Mentor turn is no longer active.", 409);
       if (!event.turnId || event.turnId === activeMentorTurn?.id) {
+        event = { ...event, runId: activeMentorTurn?.runId || event.runId };
         await failActiveWork(event.type === "RUN_ERROR" ? "Mentor could not complete this request. Retry when ready." : "Mentor finished without a complete answer. Retry when ready.");
       }
       if (event.type === "RUN_ERROR") {
@@ -614,66 +664,71 @@ export async function createLearnAnythingServer({
     return { accepted: true };
   }
 
+  function validationError(code, path, message) {
+    return Object.assign(httpError(message, 400), { code, path });
+  }
+
+  // Every canvas update carries exactly one learner-visible continuation: a direct
+  // question in chat, or one concrete action on a named target in work, bound to a
+  // structured action type the target supports (stage-catalog.md, pedagogy.md).
+  // Question marks are checked across scripts, not only ASCII.
+  const QUESTION_MARK = /[?\uFF1F\u061F\u037E\u055E\u2E2E]/u;
+
   function plainCanvasPayload(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw httpError("A2UI payload must be an object.", 400);
-    if (!["chat", "work"].includes(value.focus)) throw httpError("A2UI payload focus must be chat or work.", 400);
-    if (!Array.isArray(value.messages)) throw httpError("A2UI payload messages must be an array.", 400);
+    const invalid = (path, message, code = "INVALID_FIELD") => { throw validationError(code, path, message); };
+    if (!value || typeof value !== "object" || Array.isArray(value)) invalid("/", "A2UI payload must be an object.");
+    if (!["chat", "work"].includes(value.focus)) invalid("/focus", "A2UI payload focus must be chat or work.");
+    if (!Array.isArray(value.messages)) invalid("/messages", "A2UI payload messages must be an array.");
     const continuation = value.continuation;
-    if (!continuation || typeof continuation !== "object" || Array.isArray(continuation)) throw httpError("A2UI payload requires continuation metadata.", 400);
-    if (!["question", "action"].includes(continuation.kind)) throw httpError("Continuation kind must be question or action.", 400);
+    if (!continuation || typeof continuation !== "object" || Array.isArray(continuation)) invalid("/continuation", "A2UI payload requires continuation metadata.");
+    if (!["question", "action"].includes(continuation.kind)) invalid("/continuation/kind", "Continuation kind must be question or action.");
     const text = typeof continuation.text === "string" ? continuation.text.trim() : "";
-    if (!text) throw httpError("Continuation text is required.", 400);
-    if (value.focus === "chat" && continuation.kind !== "question") throw httpError("Chat focus requires a direct learner question.", 400);
-    if (value.focus === "work" && continuation.kind !== "action") throw httpError("Work focus requires a concrete learner action.", 400);
-    const normalized = text.toLocaleLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
-    const genericContinuation = /^(?:continue|proceed|next|keep going|go on)(?: (?:with|to|the|this|your|visible|current|activity|lesson|course|work|mentor|guidance|applying))*$/;
-    if (continuation.kind === "question" && (!text.includes("?") || !normalized || genericContinuation.test(normalized))) {
-      throw httpError("Chat continuation must contain a meaningful direct question.", 400);
+    if (!text) invalid("/continuation/text", "Continuation text is required.");
+    if (value.focus === "chat" && continuation.kind !== "question") invalid("/continuation/kind", "Chat focus requires a direct learner question.");
+    if (value.focus === "work" && continuation.kind !== "action") invalid("/continuation/kind", "Work focus requires a concrete learner action.");
+    if (continuation.kind === "question" && (!QUESTION_MARK.test(text) || isGenericAction(text.replace(/[?\uFF1F\u061F\u037E\u055E\u2E2E]/gu, "")))) {
+      invalid("/continuation/text", "Chat continuation must contain a meaningful direct question.", "GENERIC_CONTINUATION");
     }
     if (continuation.kind === "action" && isGenericAction(text)) {
-      throw httpError("Work continuation must name one concrete visible action and its target or expected evidence.", 400);
+      invalid("/continuation/text", "Work continuation must name one concrete visible action and its target or expected evidence.", "GENERIC_CONTINUATION");
     }
     if (value.focus === "work") {
-      const taskTitle = typeof continuation.taskTitle === "string" ? continuation.taskTitle.trim().slice(0, 120) : "";
-      const targetComponentId = typeof continuation.targetComponentId === "string" ? continuation.targetComponentId.trim().slice(0, 200) : "";
-      const actionType = typeof continuation.actionType === "string" ? continuation.actionType.trim() : "";
-      if (!taskTitle) throw httpError("Work continuation requires one localized taskTitle.", 400);
-      if (!targetComponentId) throw httpError("Work continuation requires one targetComponentId.", 400);
-      if (!ACTION_TYPES.includes(actionType)) throw httpError(`Work continuation actionType must be one of: ${ACTION_TYPES.join(", ")}.`, 400);
-      if (!actionMatchesType(text, actionType)) throw httpError("Work continuation requires nonempty text and a supported actionType.", 400);
+      const field = (key, max) => (typeof continuation[key] === "string" ? continuation[key].trim().slice(0, max) : "");
+      const taskTitle = field("taskTitle", 120);
+      const targetComponentId = field("targetComponentId", 200);
+      const actionType = field("actionType", 20);
+      if (!taskTitle) invalid("/continuation/taskTitle", "Work continuation requires one localized taskTitle.");
+      if (!targetComponentId) invalid("/continuation/targetComponentId", "Work continuation requires one targetComponentId.");
+      if (!ACTION_TYPES.includes(actionType)) invalid("/continuation/actionType", `Work continuation actionType must be one of: ${ACTION_TYPES.join(", ")}.`);
+      if (!actionMatchesType(text, actionType)) invalid("/continuation/actionType", "Work continuation requires nonempty text and a supported actionType.");
       return { focus: value.focus, messages: value.messages, continuation: { kind: continuation.kind, text, taskTitle, targetComponentId, actionType } };
     }
     return { focus: value.focus, messages: value.messages, continuation: { kind: continuation.kind, text } };
   }
 
   function validatedCanvasForPayload(payload) {
-    let candidateCanvas = payload.messages.length
-      ? hydrateRunResults(applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus }), session.runResults)
+    const candidateCanvas = payload.messages.length
+      ? applyA2uiMessages(session.canvas, payload.messages, { focus: payload.focus })
       : { ...structuredClone(session.canvas), focus: payload.focus };
     if (payload.focus !== "work") return candidateCanvas;
-    const surfaceId = candidateCanvas.activeSurfaceId;
-    const surface = surfaceId ? candidateCanvas.surfaces?.[surfaceId] : null;
-    if (!surface) throw httpError("Work focus requires a visible canvas.", 400);
-    const targetComponent = surface.components?.[payload.continuation.targetComponentId];
-    if (!targetComponent || ["Column", "Row"].includes(targetComponent.component)) {
-      throw httpError("Work continuation targetComponentId must name one non-layout component on the active surface.", 400);
+    const surface = candidateCanvas.surfaces?.[candidateCanvas.activeSurfaceId];
+    if (!surface) throw validationError("MISSING_SURFACE", "/focus", "Work focus requires a visible canvas.");
+    const { targetComponentId, actionType, text, taskTitle } = payload.continuation;
+    const target = surface.components?.[targetComponentId];
+    if (!target || isLayoutComponent(target.component)) {
+      throw validationError("INVALID_TARGET", "/continuation/targetComponentId", "Work continuation targetComponentId must name one non-layout component on the active surface.");
     }
-    if (!actionSupportsComponent(payload.continuation.actionType, targetComponent.component)) {
-      throw httpError(`Work continuation actionType ${payload.continuation.actionType} is incompatible with target component ${targetComponent.component}.`, 400);
+    if (!actionSupportsComponent(actionType, target.component)) {
+      throw validationError("INCOMPATIBLE_ACTION", "/continuation/actionType", `Work continuation actionType ${actionType} is incompatible with target component ${target.component}.`);
     }
-    if (actionRepeatsVisibleState(payload.continuation.text, candidateCanvas, payload.continuation.targetComponentId)) {
-      throw httpError("Work continuation asks the learner to populate code that is already visible. Name the next action on the existing artifact.", 400);
+    if (actionRepeatsVisibleState(text, candidateCanvas, targetComponentId)) {
+      throw validationError("REPEATED_VISIBLE_ACTION", "/continuation/text", "Work continuation asks the learner to populate code that is already visible. Name the next action on the existing artifact.");
     }
-    return {
-      ...candidateCanvas,
-      surfaces: {
-        ...candidateCanvas.surfaces,
-        [surfaceId]: {
-          ...surface,
-          dataModel: { ...(surface.dataModel || {}), title: payload.continuation.taskTitle },
-        },
-      },
-    };
+    surface.dataModel = { ...(surface.dataModel || {}), title: taskTitle };
+    if (Buffer.byteLength(JSON.stringify(candidateCanvas)) > MAX_BODY) {
+      throw validationError("PAYLOAD_SIZE", "/messages", "A2UI canvas exceeds 1 MB.");
+    }
+    return candidateCanvas;
   }
 
   function activeMentorTurnIsAnchoredWork() {
@@ -699,10 +754,6 @@ export async function createLearnAnythingServer({
 
   async function preserveInlineWorkContinuation(payload) {
     assertInlineWorkContinuation(payload);
-    const surface = session.canvas?.surfaces?.[session.canvas?.activeSurfaceId];
-    if (surface?.dataModel?.title !== payload.continuation.taskTitle) {
-      throw httpError("Anchored work clarification must preserve the current task title.", 400);
-    }
     session.continuation = payload.continuation;
     session.activityContractVersion = 1;
     await persist();
@@ -740,7 +791,8 @@ export async function createLearnAnythingServer({
       await persistTail;
       if (!isCommitted()) throw httpError("Mentor commit did not persist. Retry this request.", 503);
       await reconcileTeachingPatterns();
-      return { accepted: true, committed: false, idempotent: true, turnId };
+      const prior = session.mentorWork.find((work) => work.turnId === turnId)?.commitResult;
+      return { ...prior, accepted: true, committed: false, idempotent: true, turnId };
     }
     if (!activeMentorTurn || activeMentorTurn.id !== turnId) throw httpError("Mentor turn is no longer active.", 409);
     if (!Number.isInteger(value.baseRevision) || value.baseRevision !== activeMentorTurn.baseRevision) {
@@ -752,34 +804,46 @@ export async function createLearnAnythingServer({
       throw httpError("Workspace changed while mentor response was prepared.", 409);
     }
     const item = activeMentorTurn.item;
+    const runId = activeMentorTurn.runId || value.runId || randomUUID();
     if (mentorItemIsSuperseded(item, session)) {
       await failActiveWork("A newer question arrived. Retry this question if still needed.");
       setMentorState(pendingWork().length ? "waiting" : "idle");
       throw httpError("Mentor turn was superseded by a newer learner message.", 409);
     }
-    const messageText = typeof value.message === "string" ? value.message.trim() : "";
-    if (!messageText) throw httpError("Mentor turn requires learner-facing message text.", 400);
-    if (Buffer.byteLength(messageText) > 100_000) throw httpError("Mentor message is too large.", 413);
-    const payload = plainCanvasPayload({ focus: value.focus, messages: value.messages, continuation: value.continuation });
-    const anchored = item?.type === "user_message"
-      && item.message?.source === "work"
-      && Boolean(item.message?.context?.componentId)
-      && Boolean(session.canvas?.activeSurfaceId);
-    const automatic = ["execution_result", "stage_action"].includes(item?.type) && Boolean(session.canvas?.activeSurfaceId);
-    if (anchored && (payload.focus !== "work" || payload.messages.length !== 0)) {
-      throw httpError("Anchored component replies must preserve the current work canvas.", 400);
+    if (value.attempt !== undefined && value.attempt !== activeMentorTurn.item.mentorTurn.attempt) {
+      throw httpError("Mentor validation attempt is no longer active.", 409);
     }
-    if (automatic && payload.focus !== "work") {
-      throw httpError("Automatic activity feedback must preserve work focus.", 400);
-    }
-    const candidateCanvas = validatedCanvasForPayload(payload);
+    let validated;
+    try {
+      const messageText = typeof value.message === "string" ? value.message.trim() : "";
+      if (!messageText) throw httpError("Mentor turn requires learner-facing message text.", 400);
+      if (Buffer.byteLength(messageText) > 100_000) throw httpError("Mentor message is too large.", 413);
+      const payload = plainCanvasPayload(value);
+      const anchored = item?.type === "user_message"
+        && item.message?.source === "work"
+        && Boolean(item.message?.context?.componentId)
+        && Boolean(session.canvas?.activeSurfaceId);
+      const automatic = ["execution_result", "stage_action"].includes(item?.type) && Boolean(session.canvas?.activeSurfaceId);
+      if (anchored && (payload.focus !== "work" || payload.messages.length !== 0)) {
+        throw httpError("Anchored component replies must preserve the current work canvas.", 400);
+      }
+      if (automatic && payload.focus !== "work") {
+        throw httpError("Automatic activity feedback must preserve work focus.", 400);
+      }
+      const candidateCanvas = validatedCanvasForPayload(payload);
 
-    const milestone = validateMilestone(value.milestone);
-    let pattern;
-    try { pattern = validateTeachingPattern(value.pattern); } catch {
-      throw httpError("Teaching pattern must contain reusable title, description, and valid A2UI messages.", 400);
+      const milestone = validateMilestone(value.milestone);
+      let pattern;
+      try { pattern = validateTeachingPattern(value.pattern); } catch {
+        throw httpError("Teaching pattern must contain reusable title, description, and valid A2UI messages.", 400);
+      }
+      const context = cleanMentorContext(value.context);
+      validated = { messageText, payload, candidateCanvas, milestone, pattern, context };
+    } catch (error) {
+      if ([400, 413].includes(error.statusCode)) error.candidateValidation = true;
+      throw error;
     }
-    const context = cleanMentorContext(value.context);
+    const { messageText, payload, candidateCanvas, milestone, pattern, context } = validated;
     const assistantMessage = {
       id: randomUUID(),
       role: "assistant",
@@ -797,12 +861,14 @@ export async function createLearnAnythingServer({
     candidate.mentorRevision = (candidate.mentorRevision || 0) + 1;
     const committedWork = candidate.mentorWork.find((work) => work.turnId === turnId);
     committedWork.status = "committed";
+    committedWork.commitResult = { accepted: true, committed: true, turnId, messageId: assistantMessage.id, revision: candidate.mentorRevision };
     if (pattern) {
       committedWork.pattern = pattern;
       committedWork.patternSave = { status: "pending", attempts: 0 };
     }
     delete committedWork.item;
     delete committedWork.error;
+    delete committedWork.validationError;
     commitMilestone(candidate, milestone, turnId);
     candidate.mentorCommittedTurnIds = [...(candidate.mentorCommittedTurnIds || []), turnId].slice(-100);
     session = candidate;
@@ -826,15 +892,50 @@ export async function createLearnAnythingServer({
         message: assistantMessage,
         canvas: { ...canvasEventValue(session.canvas), continuation: session.continuation },
         continuation: session.continuation,
-        runId: value.runId || null,
+        runId,
       },
     }));
     broadcast(agEvent("RUN_FINISHED", {
       threadId: session.slug,
-      runId: value.runId || randomUUID(),
+      runId,
       outcome: { type: "success" },
     }));
-    return { accepted: true, committed: true, turnId, messageId: assistantMessage.id, revision: session.mentorRevision };
+    return committedWork.commitResult;
+  }
+
+  async function rejectMentorCandidate(error, value) {
+    if (!error.candidateValidation || activeMentorTurn?.id !== value.turnId) throw error;
+    const active = activeMentorTurn;
+    const work = session.mentorWork.find((entry) => entry.turnId === value.turnId);
+    const attempt = work.validationAttempt || 1;
+    const detail = {
+      code: error.code || (error.statusCode === 413 || /exceeds|too large|at most|1 MB/i.test(error.message) ? "PAYLOAD_SIZE" : "INVALID_CANDIDATE"),
+      path: error.path || (/Milestone/i.test(error.message) ? "/milestone" : /pattern/i.test(error.message) ? "/pattern" : /message text|Mentor message/i.test(error.message) ? "/message" : "/messages"),
+      message: error.message,
+    };
+    session.mentorDiagnostics = [...(session.mentorDiagnostics || []), {
+      at: new Date().toISOString(), severity: "hard", turnId: value.turnId,
+      baseRevision: value.baseRevision, attempt, ...detail,
+    }].slice(-100);
+    process.stderr.write(`${JSON.stringify({ event: "mentor_candidate_rejected", turnId: value.turnId, attempt, ...detail })}\n`);
+    const retryable = attempt < 3;
+    if (retryable) {
+      work.validationAttempt = attempt + 1;
+      work.validationError = detail;
+      active.item = { ...active.item, validationError: detail,
+        mentorTurn: { ...active.item.mentorTurn, attempt: attempt + 1 } };
+      active.suppressValidationFailure = true;
+      // No learner broadcast for a rejected candidate. The existing responding
+      // state remains a neutral preparation indicator throughout correction.
+      await persist({ bumpRevision: false });
+    } else {
+      await failActiveWork("Mentor could not prepare a valid response after two corrections. Retry when ready.");
+      broadcast(agEvent("RUN_ERROR", { runId: active.runId || value.runId || randomUUID(),
+        turnId: value.turnId, code: detail.code, message: "Mentor could not prepare a valid response. Retry when ready." }));
+      setMentorState(pendingWork().length ? "waiting" : "idle");
+    }
+    return { accepted: false, retryable, turnId: value.turnId, baseRevision: value.baseRevision,
+      attempt, ...(retryable ? { nextAttempt: attempt + 1 } : {}), error: detail.message, validationError: detail };
   }
 
   let derivedTail = Promise.resolve();
@@ -907,6 +1008,7 @@ export async function createLearnAnythingServer({
           transcript: session.transcript,
           canvas: session.canvas,
           continuation: session.continuation || null,
+          runResults: session.runResults,
           progress: session.progress,
           mentorRecovery: recoverySnapshot(session),
           teachingLibraryStatus: teachingLibraryStatus(),
@@ -960,6 +1062,7 @@ export async function createLearnAnythingServer({
             transcript: session.transcript,
             canvas: canvasEventValue(session.canvas),
             continuation: session.continuation || null,
+            runResults: session.runResults,
             progress: session.progress,
             mentorRecovery: recoverySnapshot(session),
             teachingLibraryStatus: teachingLibraryStatus(),
@@ -1015,7 +1118,11 @@ export async function createLearnAnythingServer({
         work.status = body.action === "retry" ? "pending" : "dismissed";
         delete work.error;
         if (body.action === "dismiss") delete work.item;
-        else work.item.retryRequestedAt = new Date().toISOString();
+        else {
+          work.item.retryRequestedAt = new Date().toISOString();
+          work.validationAttempt = 1;
+          delete work.validationError;
+        }
         await persist({ bumpRevision: false });
         emitRecovery();
         if (body.action === "retry") { setMentorState("waiting"); wakeMentor(); }
@@ -1091,8 +1198,16 @@ export async function createLearnAnythingServer({
 
       if (request.method === "POST" && pathname === "/api/mentor/turn") {
         requireActiveMentor(request);
-        const result = await commitMentorTurn(await readBody(request));
-        sendJson(response, result.committed ? 201 : 200, result);
+        const value = await readBody(request);
+        try {
+          const result = await commitMentorTurn(value);
+          sendJson(response, result.committed ? 201 : 200, result);
+        } catch (error) {
+          const result = await rejectMentorCandidate(error, value);
+          // 422 avoids older adapters' local one-off 400 retry loops; the next
+          // queue delivery is the single authority for correction attempts.
+          sendJson(response, result.retryable && error.statusCode !== 413 ? 422 : error.statusCode, result);
+        }
         return;
       }
 
@@ -1128,6 +1243,7 @@ export async function createLearnAnythingServer({
           const component = runnableComponent(session.canvas, action.componentId);
           const result = session.runResults?.[runResultKey(session.canvas, action.componentId)];
           if (!component) throw httpError("This code activity is unavailable.", 400);
+          if (component.runnable === false) throw httpError("This activity does not support code submission.", 400);
           if (typeof action.code !== "string" || action.code !== component.value) throw httpError("Run the current code before submitting it.", 409);
           if (!result || result.executedCode !== action.code || result.codeHash !== createHash("sha256").update(action.code).digest("hex")) throw httpError("Run the current code before submitting it.", 409);
           const item = {
@@ -1137,7 +1253,7 @@ export async function createLearnAnythingServer({
             runner: component.run?.runner || component.language,
             componentId: component.id,
             code: component.value,
-            result,
+            result: compactRunResult(result),
             canvasContext: session.canvas,
             createdAt: new Date().toISOString(),
           };
@@ -1174,6 +1290,7 @@ export async function createLearnAnythingServer({
         if (typeof body.code !== "string" || Buffer.byteLength(body.code) > 100_000) throw httpError("Code must be a string no larger than 100 KB.", 400);
         const evidence = { executedCode: body.code, codeHash: createHash("sha256").update(body.code).digest("hex") };
         const component = runnableComponent(session.canvas, body.componentId);
+        if (body.componentId !== undefined && !component) throw httpError("This code activity is unavailable.", 400);
         const language = component?.language || body.language;
         const runner = component?.run?.runner || language;
         const setup = component?.run?.setup || "";
@@ -1213,21 +1330,17 @@ export async function createLearnAnythingServer({
           }));
           broadcast(agEvent("RUN_FINISHED", { threadId: session.slug, runId, outcome: { type: "success" } }));
           if (resultKey) {
-            session.runResults = { ...(session.runResults || {}), [resultKey]: result };
-            const activeComponent = resultKey === runResultKey(session.canvas, body.componentId) ? runnableComponent(session.canvas, body.componentId) : null;
-            if (activeComponent) activeComponent.lastResult = result;
+            retainRunResult(session, resultKey, result);
             await persist();
-            if (activeComponent) broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, activeComponent) }));
+            broadcast(agEvent("CUSTOM", { name: "run_results", value: { results: session.runResults } }));
           }
           sendJson(response, 200, result);
         } catch (error) {
           const failedResult = { error: error.message, ...evidence };
           if (resultKey) {
-            session.runResults = { ...(session.runResults || {}), [resultKey]: failedResult };
-            const activeComponent = resultKey === runResultKey(session.canvas, body.componentId) ? runnableComponent(session.canvas, body.componentId) : null;
-            if (activeComponent) activeComponent.lastResult = failedResult;
+            retainRunResult(session, resultKey, failedResult);
             await persist();
-            if (activeComponent) broadcast(agEvent("CUSTOM", { name: "a2ui", value: componentDelta(session.canvas, activeComponent) }));
+            broadcast(agEvent("CUSTOM", { name: "run_results", value: { results: session.runResults } }));
           }
           broadcast(agEvent("RUN_ERROR", { message: error.message, code: "EXECUTION_ERROR" }));
           sendJson(response, error.statusCode || 400, failedResult);

@@ -15,6 +15,9 @@ const MAX_PARAMETER_FRAMES = 101;
 const MAX_FRAME_UPDATES = 12;
 const MAX_MATH_EXPRESSION = 5_000;
 const BLOCKED_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
+// Execution evidence is recorded by the host from the exact submitted code; a mentor
+// message must never author it.
+export const HOST_ONLY_COMPONENT_KEYS = Object.freeze(["lastResult", "executedCode", "codeHash"]);
 
 function protocolError(message) {
   return Object.assign(new Error(message), { statusCode: 400 });
@@ -96,12 +99,23 @@ function updateDataModel(surface, path, value) {
     return;
   }
   const segments = pointerSegments(path);
-  if (!surface.dataModel || typeof surface.dataModel !== "object" || Array.isArray(surface.dataModel)) surface.dataModel = {};
+  const containerFor = (segment) => /^(0|[1-9]\d*)$/.test(segment) ? [] : {};
+  const checkArrayIndex = (target, segment) => {
+    // Reject sparse-array expansion before serialization can allocate beyond
+    // the existing canvas budget (even empty slots serialize as null).
+    if (Array.isArray(target) && /^(0|[1-9]\d*)$/.test(segment) && Number(segment) >= MAX_CANVAS_BYTES) {
+      throw protocolError("A2UI canvas exceeds 1 MB.");
+    }
+  };
+  if (!surface.dataModel || typeof surface.dataModel !== "object") surface.dataModel = containerFor(segments[0]);
   let target = surface.dataModel;
-  for (const segment of segments.slice(0, -1)) {
-    if (!target[segment] || typeof target[segment] !== "object" || Array.isArray(target[segment])) target[segment] = {};
+  for (const [index, segment] of segments.slice(0, -1).entries()) {
+    checkArrayIndex(target, segment);
+    if (!Object.hasOwn(target, segment)) target[segment] = containerFor(segments[index + 1]);
+    if (!target[segment] || typeof target[segment] !== "object") throw protocolError("updateDataModel path must traverse objects or arrays.");
     target = target[segment];
   }
+  checkArrayIndex(target, segments.at(-1));
   target[segments.at(-1)] = clone(value);
 }
 
@@ -293,6 +307,9 @@ export function applyA2uiMessages(current, messages, { focus } = {}) {
         const component = plainObject(candidate, `A2UI component ${index + 1}`);
         const id = boundedId(component.id, `A2UI component ${index + 1} id`);
         boundedId(component.component, `A2UI component ${index + 1} component`);
+        for (const key of HOST_ONLY_COMPONENT_KEYS) {
+          if (Object.hasOwn(component, key)) throw protocolError(`A2UI component ${id} field ${key} is host-only.`);
+        }
         surface.components[id] = clone(component);
       }
     } else {
@@ -371,14 +388,15 @@ export function applyParameterFrame(current, componentId, controlId, requestedVa
   const control = component.controls.find((candidate) => candidate.id === controlId);
   if (!control || !Number.isFinite(requestedValue)) return null;
   const value = Math.min(control.max, Math.max(control.min, requestedValue));
-  control.value = value;
-  if (control.path) updateDataModel(surface, control.path, value);
+  let frame;
   if (Array.isArray(control.frames) && control.frames.length) {
-    const frame = control.frames.reduce((nearest, candidate) => (
+    frame = control.frames.reduce((nearest, candidate) => (
       Math.abs(candidate.value - value) < Math.abs(nearest.value - value) ? candidate : nearest
     ));
-    for (const update of frame.updates) updateDataModel(surface, update.path, update.value);
   }
+  control.value = frame ? frame.value : value;
+  if (control.path) updateDataModel(surface, control.path, control.value);
+  if (frame) for (const update of frame.updates) updateDataModel(surface, update.path, update.value);
   validateCanvas(canvas);
   return canvas;
 }

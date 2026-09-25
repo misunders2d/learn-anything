@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import mermaid from "mermaid";
+import { safeStorage } from "./safe-storage.mjs";
+import { t, usePresentation, ThemePicker, useResolvedTheme, mermaidThemeVariables } from "./i18n.mjs";
 import {
   appendPartialDelta,
   createPartialMessage,
@@ -15,27 +17,16 @@ import { clearDraft, loadDraft, saveDraft } from "./draft-store.mjs";
 import { connectionIssueFor, firstLearnerComponentId, learningProgress, recoveryCanAct, resultMatchesCode, resolveFocus, shouldReleaseRescue, workTaskKey } from "./workspace-state.mjs";
 
 marked.setOptions({ gfm: true, breaks: true });
-mermaid.initialize({
-  startOnLoad: false,
-  securityLevel: "strict",
-  theme: "base",
-  themeVariables: {
-    background: "#fbfaf7",
-    primaryColor: "#f3f1ec",
-    primaryTextColor: "#1b1a18",
-    primaryBorderColor: "#c9c4bb",
-    secondaryColor: "#e8eeff",
-    secondaryTextColor: "#1b1a18",
-    secondaryBorderColor: "#9aace8",
-    tertiaryColor: "#ffffff",
-    tertiaryTextColor: "#1b1a18",
-    tertiaryBorderColor: "#c9c4bb",
-    lineColor: "#8b867e",
-    edgeLabelBackground: "#fbfaf7",
-    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
-  },
-  flowchart: { htmlLabels: false },
-});
+function initializeMermaid() {
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: "base",
+    themeVariables: mermaidThemeVariables(),
+    flowchart: { htmlLabels: false },
+  });
+}
+initializeMermaid();
 
 const fragment = new URLSearchParams(window.location.hash.slice(1));
 const fragmentToken = fragment.get("token");
@@ -89,14 +80,14 @@ class ErrorBoundary extends React.Component {
     if (this.props.root) {
       return (
         <main className="root-fallback">
-          <h1>Workspace needs to reload</h1>
-          <p>The browser shell is still available. Use <strong>Ask mentor</strong> to reload and return to chat.</p>
+          <h1>{t("Workspace needs to reload")}</h1>
+          <p>{t("The browser shell is still available. Use ")}<strong>{t("Ask mentor")}</strong>{t(" to reload and return to chat.")}</p>
         </main>
       );
     }
     return (
       <section className="activity-error">
-        This activity could not render. Use Ask mentor and describe what you saw.
+        {t("This activity could not render. Use Ask mentor and describe what you saw.")}
       </section>
     );
   }
@@ -124,7 +115,7 @@ function ModelPicker({ id, catalog, selectedModel, changing, error, onChange }) 
   const visibleModels = matches.slice(0, 40);
   useEffect(() => setDraft(selectedModel || ""), [selectedModel]);
   useEffect(() => setActiveIndex(0), [query]);
-  if (!catalog) return error ? <span className="model-picker-error" role="status" title={error}>Models unavailable</span> : null;
+  if (!catalog) return error ? <span className="model-picker-error" role="status" title={error}>{t("Models unavailable")}</span> : null;
   if (!catalog.supported) return null;
   const optionsId = `mentor-models-${id}`;
   const commit = (model) => {
@@ -141,12 +132,12 @@ function ModelPicker({ id, catalog, selectedModel, changing, error, onChange }) 
   };
   return (
     <div ref={wrapRef} className="model-picker-wrap">
-      <label className="model-picker" title="Next mentor turn uses this model while course context stays in the same session">
-        <span>Mentor</span>
+      <label className="model-picker" title={t("Next mentor turn uses this model while course context stays in the same session")}>
+        <span>{t("Mentor")}</span>
         <input
           type="search"
           role="combobox"
-          aria-label="Mentor model"
+          aria-label={t("Mentor model")}
           aria-describedby={`${optionsId}-help`}
           aria-controls={optionsId}
           aria-expanded={open}
@@ -176,13 +167,13 @@ function ModelPicker({ id, catalog, selectedModel, changing, error, onChange }) 
               setOpen(false);
             }
           }}
-          placeholder="Search models"
+          placeholder={t("Search models")}
           autoComplete="off"
         />
-        <span id={`${optionsId}-help`} className="visually-hidden">Search available models. The selected model handles the next mentor turn. Course context stays in the same mentor session.</span>
+        <span id={`${optionsId}-help`} className="visually-hidden">{t("Search available models. The selected model handles the next mentor turn. Course context stays in the same mentor session.")}</span>
       </label>
-      {open && <div id={optionsId} className="model-options" role="listbox" aria-label="Available mentor models">
-        <div className="model-options-summary">{matches.length === 0 ? "No matching models" : `${matches.length} model${matches.length === 1 ? "" : "s"}`}</div>
+      {open && <div id={optionsId} className="model-options" role="listbox" aria-label={t("Available mentor models")}>
+        <div className="model-options-summary">{matches.length === 0 ? t("No matching models") : t("modelCount", { count: matches.length })}</div>
         {visibleModels.map((model, index) => (
           <button
             key={model.id}
@@ -198,35 +189,31 @@ function ModelPicker({ id, catalog, selectedModel, changing, error, onChange }) 
             <span>{model.model}</span><small>{model.provider}</small>
           </button>
         ))}
-        {matches.length > visibleModels.length && <div className="model-options-more">Keep typing to narrow {matches.length} matches</div>}
+        {matches.length > visibleModels.length && <div className="model-options-more">{t("narrowModels", { count: matches.length })}</div>}
       </div>}
-      {error && <span className="model-picker-error" role="status" title={error}>Change failed</span>}
+      {error && <span className="model-picker-error" role="status" title={error}>{t("Change failed")}</span>}
     </div>
   );
 }
 
 function WorkspaceStatus({ connected, mentorAttached, degraded, hasRunnableCode }) {
   const notices = [...new Set((degraded || []).flatMap((item) => {
-    if (item === "host-execution-full-user-permissions") return hasRunnableCode ? ["code has full local permissions"] : [];
-    if (item === "mentor-output-may-arrive-per-turn" || item === "mentor-output-arrives-after-headless-turn") return ["turn-complete replies"];
+    if (item === "host-execution-full-user-permissions") return hasRunnableCode ? [t("code has full local permissions")] : [];
+    if (item === "mentor-output-may-arrive-per-turn" || item === "mentor-output-arrives-after-headless-turn") return [t("turn-complete replies")];
     return [item.replaceAll("-", " ")];
   }))];
   return (
     <div className="workspace-status" title={notices.join(" · ")}>
       <span className={`status-dot ${connected && mentorAttached ? "is-connected" : "is-connecting"}`} />
-      <span>{!connected ? "Connecting" : mentorAttached ? "Mentor ready" : "Mentor unavailable"}</span>
-      {hasRunnableCode && <span className="status-detail">Local runner</span>}
+      <span>{!connected ? t("Connecting") : mentorAttached ? t("Mentor ready") : t("Mentor unavailable")}</span>
+      {hasRunnableCode && <span className="status-detail">{t("Local runner")}</span>}
     </div>
   );
 }
 
-function usesCyrillic(value) {
-  return /\p{Script=Cyrillic}/u.test(value || "");
-}
-
 function continuationLabel(continuation) {
-  if (continuation?.kind === "question") return usesCyrillic(continuation?.text) ? "Ваш ход" : "Your turn";
-  return usesCyrillic(continuation?.text) ? "Сделай сейчас" : "Do this now";
+  if (continuation?.kind === "question") return t("Your turn");
+  return t("Do this now");
 }
 
 function ContinuationBanner({ continuation, active = false }) {
@@ -241,15 +228,15 @@ function ChatComposer({ draft, setDraft, sending, sendError, mentorState, onSend
   return (
     <form onSubmit={(event) => { event.preventDefault(); void onSend(); }} className={`chat-composer ${centered ? "chat-composer-centered" : ""}`}>
       <div className="mentor-presence" role="status" aria-live="polite">
-        {mentorState === "waiting" && <><span className="thinking-dot" />Thinking about your question… <button type="button" className="mentor-stop" onClick={onInterrupt}>Stop</button></>}
-        {mentorState === "responding" && <><span className="thinking-dot" />Writing a response… <button type="button" className="mentor-stop" onClick={onInterrupt}>Stop</button></>}
+        {mentorState === "waiting" && <><span className="thinking-dot" />{t("Thinking about your question…")} <button type="button" className="mentor-stop" onClick={onInterrupt}>{t("Stop")}</button></>}
+        {mentorState === "responding" && <><span className="thinking-dot" />{t("Writing a response…")} <button type="button" className="mentor-stop" onClick={onInterrupt}>{t("Stop")}</button></>}
       </div>
       <div className="composer-control">
-        <textarea name="mentor-question" ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void onSend(); } }} rows={centered ? 3 : 2} placeholder={centered ? "What would you like to understand, build, or practice?" : "Ask a follow-up or share what you tried…"} />
-        <button type="submit" disabled={!draft.trim() || sending} aria-label="Send message">{sending ? "Sending…" : "Send"}</button>
+        <textarea name="mentor-question" ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void onSend(); } }} rows={centered ? 3 : 2} placeholder={centered ? t("What would you like to understand, build, or practice?") : t("Ask a follow-up or share what you tried…")} />
+        <button type="submit" disabled={!draft.trim() || sending} aria-label={t("Send message")}>{sending ? t("Sending…") : t("Send")}</button>
       </div>
-      {centered && <p className="composer-hint">Enter to send · Shift + Enter for a new line</p>}
-      {sendError && <p className="send-error">Could not send: {sendError}</p>}
+      {centered && <p className="composer-hint">{t("Enter to send · Shift + Enter for a new line")}</p>}
+      {sendError && <p className="send-error">{t("Could not send:")} {t(sendError)}</p>}
     </form>
   );
 }
@@ -260,8 +247,8 @@ function ConnectionIssue({ issue }) {
     <aside className="connection-issue" role="alert">
       <div className="connection-issue-mark">!</div>
       <div>
-        <strong>{issue.title}</strong>
-        <p>{issue.message}</p>
+        <strong>{t(issue.titleKey)}</strong>
+        <p>{t(issue.messageKey)}</p>
       </div>
     </aside>
   );
@@ -271,7 +258,7 @@ function Message({ message }) {
   const isUser = message.role === "user";
   return (
     <article className={`chat-message ${isUser ? "chat-message-user" : "chat-message-mentor"}`}>
-      <div className="message-role">{isUser ? "You" : "Mentor"}</div>
+      <div className="message-role">{isUser ? t("You") : t("Mentor")}</div>
       <Markdown content={message.content} />
     </article>
   );
@@ -293,7 +280,7 @@ function latestWorkExchange(messages) {
 
 function CodeEditor({ language, value, onChange }) {
   const rows = Math.max(4, Math.min(18, value.split(/\r?\n/).length + 2));
-  return <textarea name={`${language}-editor`} aria-label={`${language} editor`} rows={rows} className="code-fallback" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => {
+  return <textarea name={`${language}-editor`} aria-label={t("editorLabel", { language })} rows={rows} className="code-fallback" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => {
     if (event.key !== "Tab") return;
     event.preventDefault();
     const input = event.currentTarget;
@@ -322,42 +309,44 @@ function DataTable({ columns = [], rows = [], caption }) {
 
 function LearningStatus({ progress, recovery, pending, error, notice, onRecover }) {
   const { count, milestones, nextStep } = learningProgress(progress);
-  return <aside className="learning-status scroll-region" aria-label="Learning progress and recovery">
+  return <aside className="learning-status scroll-region" aria-label={t("Learning progress and recovery")}>
     <details className="learning-progress">
-      <summary>Learning progress <span>{count ? `${count} milestone${count === 1 ? "" : "s"}` : "Getting started"}</span></summary>
+      <summary>{t("Learning progress")} <span>{count ? t(count === 1 ? "milestoneOne" : "milestoneCount", { count }) : t("Getting started")}</span></summary>
       <div className="progress-content">
         {milestones.length ? <ol>{milestones.map((milestone, index) => <li key={milestone.turnId || index}>
           <strong>{milestone.title}</strong>
           {milestone.takeaway && <p>{milestone.takeaway}</p>}
-          {milestone.nextStep && <p className="milestone-next">Next: {milestone.nextStep}</p>}
-        </li>)}</ol> : <p>Your mentor will record milestones as you work through the lesson.</p>}
-        {nextStep && <p className="progress-next"><strong>Next step:</strong> {nextStep}</p>}
+          {milestone.nextStep && <p className="milestone-next">{t("Next:")} {milestone.nextStep}</p>}
+        </li>)}</ol> : <p>{t("Your mentor will record milestones as you work through the lesson.")}</p>}
+        {nextStep && <p className="progress-next"><strong>{t("Next step:")}</strong> {nextStep}</p>}
       </div>
     </details>
-    {recovery.map((item) => <section className="mentor-recovery" key={item.turnId} aria-label="Mentor request">
+    {recovery.map((item) => <section className="mentor-recovery" key={item.turnId} aria-label={t("Mentor request")}>
       <div>
-        <strong>{recoveryCanAct(item) ? "Mentor response paused" : "Mentor request in progress"}</strong>
-        <p>{item.summary || "Your request is saved."}</p>
-        {recoveryCanAct(item) && <p className="recovery-hint">Retry this request, or dismiss it and continue your activity.</p>}
+        <strong>{recoveryCanAct(item) ? t("Mentor response paused") : t("Mentor request in progress")}</strong>
+        <p>{item.summary || t("Your request is saved.")}</p>
+        {recoveryCanAct(item) && <p className="recovery-hint">{t("Retry this request, or dismiss it and continue your activity.")}</p>}
       </div>
       {recoveryCanAct(item) && <div className="recovery-actions">
-        <button type="button" disabled={Boolean(pending)} onClick={() => onRecover(item.turnId, "retry")}>{pending === `${item.turnId}:retry` ? "Retrying…" : "Retry"}</button>
-        <button type="button" disabled={Boolean(pending)} onClick={() => onRecover(item.turnId, "dismiss")}>{pending === `${item.turnId}:dismiss` ? "Dismissing…" : "Dismiss"}</button>
+        <button type="button" disabled={Boolean(pending)} onClick={() => onRecover(item.turnId, "retry")}>{pending === `${item.turnId}:retry` ? t("Retrying…") : t("Retry")}</button>
+        <button type="button" disabled={Boolean(pending)} onClick={() => onRecover(item.turnId, "dismiss")}>{pending === `${item.turnId}:dismiss` ? t("Dismissing…") : t("Dismiss")}</button>
       </div>}
     </section>)}
-    {error && <p className="send-error" role="alert">{error}</p>}
-    <p className="visually-hidden" role="status">{notice}</p>
+    {error && <p className="send-error" role="alert">{t(error)}</p>}
+    <p className="visually-hidden" role="status">{t(notice)}</p>
   </aside>;
 }
 
-function CodeBlock({ component, onSubmitToMentor }) {
+function CodeBlock({ component, runResult, onSubmitToMentor }) {
   const draftKey = `code:${component._surfaceId || "surface"}:${component.id || "editor"}`;
-  const [code, setCode] = useState(() => loadDraft(window.localStorage, draftKey, component.value || ""));
+  const [code, setCode] = useState(() => loadDraft(safeStorage(), draftKey, component.value || ""));
   const [running, setRunning] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [submitError, setSubmitError] = useState("");
-  const [result, setResult] = useState(component.lastResult || null);
+  // Run output lives outside the canvas (host runResults); older sessions may still embed lastResult.
+  const hostResult = runResult || component.lastResult || null;
+  const [result, setResult] = useState(hostResult);
   const [saveError, setSaveError] = useState("");
   const saveTimer = useRef(null);
   const resultRef = useRef(null);
@@ -372,7 +361,7 @@ function CodeBlock({ component, onSubmitToMentor }) {
           method: "POST",
           body: JSON.stringify({ action: "code_change", componentId: component.id, code: value }),
         });
-        clearDraft(window.localStorage, draftKey, value);
+        clearDraft(safeStorage(), draftKey, value);
         setSaveError("");
       } catch (error) {
         setSaveError("Could not save editor state. Your draft is kept in this browser.");
@@ -381,13 +370,13 @@ function CodeBlock({ component, onSubmitToMentor }) {
   }
 
   useEffect(() => {
-    const local = loadDraft(window.localStorage, draftKey, null);
+    const local = loadDraft(safeStorage(), draftKey, null);
     const nextCode = local ?? component.value ?? "";
     codeRef.current = nextCode;
     setCode(nextCode);
     if (local !== null && local !== component.value) scheduleSave(local);
   }, [component.value, draftKey]);
-  useEffect(() => setResult(component.lastResult || null), [component.lastResult]);
+  useEffect(() => setResult(hostResult), [hostResult]);
   useEffect(() => {
     if (result) requestAnimationFrame(() => {
       const output = resultRef.current;
@@ -408,7 +397,7 @@ function CodeBlock({ component, onSubmitToMentor }) {
     setCode(value);
     setSubmitted(false);
     setSubmitError("");
-    saveDraft(window.localStorage, draftKey, value);
+    saveDraft(safeStorage(), draftKey, value);
     scheduleSave(value);
   }
 
@@ -449,42 +438,44 @@ function CodeBlock({ component, onSubmitToMentor }) {
   return (
     <section className="playground-surface overflow-hidden">
       <div className="surface-toolbar">
-        <span>{component.language || "text"}</span>
+        <span>{component.language || t("text")}</span>
         {component.runnable !== false && <div className="surface-actions">
           <button onClick={run} disabled={running || submitting}>
-            {running ? "Running…" : "Run"}
+            {running ? t("Running…") : t("Run")}
           </button>
-          <button className="submit-code" onClick={submit} disabled={!canSubmit || submitting || submitted} title={!canSubmit ? "Run the current code before submitting it" : "Send this code and its latest result to the mentor"}>
-            {submitting ? "Submitting…" : submitted ? "Submitted" : "Submit to mentor"}
+          <button className="submit-code" onClick={submit} disabled={!canSubmit || submitting || submitted} title={!canSubmit ? t("Run the current code before submitting it") : t("Send this code and its latest result to the mentor")}>
+            {submitting ? t("Submitting…") : submitted ? t("Submitted") : t("Submit to mentor")}
           </button>
         </div>}
       </div>
       <div className="editor-shell"><CodeEditor language={component.language || "javascript"} value={code} onChange={updateCode} /></div>
       {result && <div ref={resultRef} className="execution-result" aria-live="polite">
-        {!resultMatchesCode(result, code) && <p className="stale-result">Earlier output. Run the current code before submitting.</p>}
+        {!resultMatchesCode(result, code) && <p className="stale-result">{t("Earlier output. Run the current code before submitting.")}</p>}
         {result.table?.columns?.length
-          ? <DataTable columns={result.table.columns} rows={result.table.rows} caption={`Query result · ${result.table.rowCount} row${result.table.rowCount === 1 ? "" : "s"}`} />
-          : <pre className={`console-output ${result.error || result.exitCode ? "text-red-300" : "text-slate-200"}`}>{result.error || result.stderr || result.stdout || "Completed."}</pre>}
-        {!result.error && <div className="run-meta">{result.durationMs}ms{result.table?.truncatedRows ? " · first 500 rows" : ""}</div>}
+          ? <DataTable columns={result.table.columns} rows={result.table.rows} caption={t("queryResult", { count: result.table.rowCount })} />
+          : <pre className={`console-output ${result.error || result.exitCode ? "text-red-300" : "text-slate-200"}`}>{result.error || result.stderr || result.stdout || t("Completed.")}</pre>}
+        {!result.error && <div className="run-meta">{t("duration", { milliseconds: result.durationMs })}{result.table?.truncatedRows ? t(" · first 500 rows") : ""}</div>}
       </div>}
-      {submitError && <p className="submit-error">Could not submit: {submitError}</p>}
-      {saveError && <p className="submit-error" role="status">{saveError}</p>}
+      {submitError && <p className="submit-error">{t("Could not submit:")} {submitError}</p>}
+      {saveError && <p className="submit-error" role="status">{t(saveError)}</p>}
     </section>
   );
 }
 
 function MermaidBlock({ source }) {
+  const mode = useResolvedTheme();
   const [svg, setSvg] = useState("");
   const [error, setError] = useState("");
   useEffect(() => {
     let cancelled = false;
-    mermaid.render(`diagram-${crypto.randomUUID()}`, source || "flowchart LR\nA[Empty]")
+    initializeMermaid();
+    mermaid.render(`diagram-${crypto.randomUUID()}`, source || t("emptyDiagram"))
       .then(({ svg: rendered }) => {
         if (!cancelled) setSvg(rendered);
       })
       .catch((reason) => !cancelled && setError(reason.message));
     return () => { cancelled = true; };
-  }, [source]);
+  }, [source, mode]);
   if (error) return <pre className="activity-error">{error}</pre>;
   return <div className="diagram-surface" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
@@ -512,7 +503,7 @@ function MathBlock({ component }) {
     }).catch((error) => !cancelled && setRendered({ error: error.message }));
     return () => { cancelled = true; };
   }, [component.expression, component.display]);
-  if (rendered.error) return <section className="activity-error">This notation could not render: {rendered.error}</section>;
+  if (rendered.error) return <section className="activity-error">{t("This notation could not render:")} {rendered.error}</section>;
   return <figure className="math-surface" aria-busy={!rendered.html}><div dangerouslySetInnerHTML={{ __html: rendered.html }} />{component.caption && <figcaption>{component.caption}</figcaption>}</figure>;
 }
 
@@ -537,13 +528,13 @@ function PlotBlock({ component, onContext }) {
   const x = (value) => margin.left + ((value - xMin) / (xMax - xMin)) * (width - margin.left - margin.right);
   const y = (value) => height - margin.bottom - ((value - yMin) / (yMax - yMin)) * (height - margin.top - margin.bottom);
   const ticks = Array.from({ length: 5 }, (_, index) => index / 4);
-  const describePoint = (item, point) => `${item.label || item.id || "Series"}: ${component.x?.label || "x"} ${tickLabel(point[0])}, ${component.y?.label || "y"} ${tickLabel(point[1])}`;
+  const describePoint = (item, point) => `${item.label || item.id || t("Series")}: ${component.x?.label || "x"} ${tickLabel(point[0])}, ${component.y?.label || "y"} ${tickLabel(point[1])}`;
   return (
     <figure className="plot-surface">
       {component.title && <h3>{component.title}</h3>}
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby={`${component.id}-plot-title ${component.id}-plot-desc`}>
-        <title id={`${component.id}-plot-title`}>{component.title || "Interactive plot"}</title>
-        <desc id={`${component.id}-plot-desc`}>{component.description || `${series.length} plotted series. A data table follows the chart.`}</desc>
+        <title id={`${component.id}-plot-title`}>{component.title || t("Interactive plot")}</title>
+        <desc id={`${component.id}-plot-desc`}>{component.description || t("plotDescription", { count: series.length })}</desc>
         <g className="plot-grid">
           {ticks.map((ratio) => {
             const tickX = margin.left + ratio * (width - margin.left - margin.right);
@@ -568,14 +559,14 @@ function PlotBlock({ component, onContext }) {
             <path d={path} fill="none" stroke={color} strokeWidth="3" strokeDasharray={plotDashes[seriesIndex % plotDashes.length]} />
             {(item.points || []).map((point, pointIndex) => {
               const label = describePoint(item, point);
-              const ask = () => onContext?.({ componentId: component.id, label: component.title || "plot", quote: label });
+              const ask = () => onContext?.({ componentId: component.id, label: component.title || t("plot"), quote: label });
               return <circle key={pointIndex} cx={x(point[0])} cy={y(point[1])} r="4.5" fill="var(--surface)" stroke={color} strokeWidth="2.5" aria-hidden="true" onClick={ask} />;
             })}
           </g>;
         })}
       </svg>
-      <div className="plot-legend" aria-label="Plot legend">{series.map((item, index) => <span key={item.id || index}><i style={{ "--series-color": plotColors[index] }} />{item.label || item.id || `Series ${index + 1}`}</span>)}</div>
-      <details className="plot-data"><summary>View plotted values</summary>{series.map((item, index) => <DataTable key={item.id || index} caption={item.label || item.id || `Series ${index + 1}`} columns={[component.x?.label || "x", component.y?.label || "y"]} rows={item.points} />)}</details>
+      <div className="plot-legend" aria-label={t("Plot legend")}>{series.map((item, index) => <span key={item.id || index}><i style={{ "--series-color": plotColors[index] }} />{item.label || item.id || t("seriesNumber", { number: index + 1 })}</span>)}</div>
+      <details className="plot-data"><summary>{t("View plotted values")}</summary>{series.map((item, index) => <DataTable key={item.id || index} caption={item.label || item.id || t("seriesNumber", { number: index + 1 })} columns={[component.x?.label || "x", component.y?.label || "y"]} rows={item.points} />)}</details>
       {component.caption && <figcaption>{component.caption}</figcaption>}
     </figure>
   );
@@ -588,13 +579,13 @@ function ParameterBlock({ component, onParameterChange }) {
   return <section className="parameter-surface">{component.title && <h3>{component.title}</h3>}{(component.controls || []).map((control) => <label key={control.id}><span>{control.label}</span><output>{control.value}{control.unit ? ` ${control.unit}` : ""}</output><input name={control.id} aria-label={control.label} type="range" min={control.min} max={control.max} step={control.step || 1} value={control.value} onChange={(event) => change(control, event.currentTarget.value)} onPointerUp={(event) => change(control, event.currentTarget.value, true)} onKeyUp={(event) => { if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) change(control, event.currentTarget.value, true); }} /></label>)}</section>;
 }
 
-function StageComponent({ component, onContext, onParameterChange, onSubmitToMentor }) {
+function StageComponent({ component, runResult, onContext, onParameterChange, onSubmitToMentor }) {
   if (component.type === "markdown") return <article className="prose-surface"><Markdown content={component.content} /></article>;
   if (component.type === "callout") {
     const tone = component.tone === "success" ? "is-success" : component.tone === "warning" ? "is-warning" : "";
     return <section className={`callout-surface ${tone}`}><h3>{component.title}</h3><Markdown content={component.content} /></section>;
   }
-  if (component.type === "code") return <CodeBlock key={`${component._surfaceId}:${component.id}`} component={component} onSubmitToMentor={onSubmitToMentor} />;
+  if (component.type === "code") return <CodeBlock key={`${component._surfaceId}:${component.id}`} component={component} runResult={runResult} onSubmitToMentor={onSubmitToMentor} />;
   if (component.type === "table") return <DataTable columns={component.columns} rows={component.rows} caption={component.caption} />;
   if (component.type === "passage") return <PassageBlock component={component} />;
   if (component.type === "figure") return <FigureBlock component={component} />;
@@ -635,29 +626,28 @@ function bindComponent(component, dataModel) {
   return Object.fromEntries(Object.entries(component).map(([key, value]) => [key, resolveDataBinding(value, dataModel)]));
 }
 
-function A2uiNode({ componentId, surface, onContext, onParameterChange, onSubmitToMentor, replyFor, currentTargetId, activeContinuation }) {
+function A2uiNode({ componentId, surface, runResults, onContext, onParameterChange, onSubmitToMentor, replyFor, currentTargetId, activeContinuation }) {
   const source = surface?.components?.[componentId];
-  if (!source) return <section className="activity-error">Canvas component “{componentId}” is missing.</section>;
+  if (!source) return <section className="activity-error">{t("componentMissing", { id: componentId })}</section>;
   const component = bindComponent(source, surface.dataModel || {});
   if (component.component === "Column" || component.component === "Row") {
     const children = Array.isArray(component.children) ? component.children : [];
-    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} replyFor={replyFor} currentTargetId={currentTargetId} activeContinuation={activeContinuation} />)}</div>;
+    return <div className={`a2ui-${component.component.toLowerCase()}`}>{children.map((childId) => <A2uiNode key={childId} componentId={childId} surface={surface} runResults={runResults} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} replyFor={replyFor} currentTargetId={currentTargetId} activeContinuation={activeContinuation} />)}</div>;
   }
   const normalized = { ...component, _surfaceId: surface.id, type: String(component.component || "unknown").toLowerCase() };
-  const label = component.title || component.question || String(component.component || "component").toLowerCase();
+  const label = component.title || component.question || t(String(component.component || "component").toLowerCase());
   const reply = replyFor(component.id);
   const current = component.id === currentTargetId;
   const askable = !["Markdown", "Callout"].includes(component.component);
-  const russian = usesCyrillic(activeContinuation?.text || reply?.content);
   return <>
     {current && <ContinuationBanner continuation={activeContinuation} active />}
     <div data-component-id={component.id || ""} className={`stage-component${current ? " is-current-target" : ""}`}>
       <ErrorBoundary>
-        <StageComponent component={normalized} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} />
+        <StageComponent component={normalized} runResult={runResults?.[`${surface.id}:${component.id}`]} onContext={onContext} onParameterChange={onParameterChange} onSubmitToMentor={onSubmitToMentor} />
       </ErrorBoundary>
-      {askable && <button type="button" onClick={() => onContext({ componentId: component.id, label })} className="ask-component">{russian ? "Спросить об этом" : "Ask about this"}</button>}
+      {askable && <button type="button" onClick={() => onContext({ componentId: component.id, label })} className="ask-component">{t("Ask about this")}</button>}
       {reply && <aside className="anchored-mentor-note">
-        <div className="anchored-note-label">{russian ? "Комментарий ментора" : "Mentor on this part"}</div>
+        <div className="anchored-note-label">{t("Mentor on this part")}</div>
         {reply.context?.quote && <blockquote>{reply.context.quote}</blockquote>}
         <Markdown content={reply.content} />
       </aside>}
@@ -705,6 +695,7 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [canvas, setCanvas] = useState(null);
   const [continuation, setContinuation] = useState(null);
+  const [runResults, setRunResults] = useState({});
   const [progress, setProgress] = useState(null);
   const [mentorRecovery, setMentorRecovery] = useState([]);
   const [recoveryPending, setRecoveryPending] = useState("");
@@ -715,8 +706,8 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [mentorAttached, setMentorAttached] = useState(false);
   const [connectionIssue, setConnectionIssue] = useState(null);
-  const [chatDraft, setChatDraft] = useState(() => loadDraft(window.localStorage, "chat", ""));
-  const [workDraft, setWorkDraft] = useState(() => loadDraft(window.localStorage, "work", ""));
+  const [chatDraft, setChatDraft] = useState(() => loadDraft(safeStorage(), "chat", ""));
+  const [workDraft, setWorkDraft] = useState(() => loadDraft(safeStorage(), "work", ""));
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const [workContext, setWorkContext] = useState(null);
@@ -739,11 +730,12 @@ function App() {
 
   const focus = resolveFocus(canvas);
   const surface = activeSurface(canvas);
+  usePresentation(surface?.dataModel?.locale);
   const components = surfaceComponents(canvas);
   const hasRunnableCode = components.some((component) => component?.component === "Code" && component.runnable !== false);
   const hasWorkSurface = Boolean(surface?.components?.root?.children?.length);
   const workExchange = latestWorkExchange(messages);
-  const canvasTitle = surface?.dataModel?.title || topic;
+  const canvasTitle = surface?.dataModel?.title || t(topic);
   const canvasDirection = ["rtl", "auto"].includes(surface?.dataModel?.direction) ? surface.dataModel.direction : "ltr";
   const taskKey = workTaskKey(canvas);
   const taskInstructionId = firstLearnerComponentId(canvas);
@@ -916,6 +908,7 @@ function App() {
         return;
       }
       if (event.type === "STATE_SNAPSHOT") {
+        setRunResults(event.snapshot.runResults && typeof event.snapshot.runResults === "object" ? event.snapshot.runResults : {});
         setTopic(event.snapshot.topic || "Learning workspace");
         setMessages(mergeSnapshotMessages(event.snapshot.transcript, partial.current));
         setCanvas((current) => {
@@ -971,6 +964,8 @@ function App() {
           releaseRescueIfReady(next);
           return next;
         });
+      } else if (event.type === "CUSTOM" && event.name === "run_results") {
+        setRunResults(event.value?.results && typeof event.value.results === "object" ? event.value.results : {});
       } else if (event.type === "CUSTOM" && event.name === "mentor_presence") {
         setMentorAttached(Boolean(event.value?.attached));
       } else if (event.type === "CUSTOM" && event.name === "mentor_recovery") {
@@ -995,7 +990,7 @@ function App() {
   function updateComposerDraft(source, value) {
     if (source === "work") setWorkDraft(value);
     else setChatDraft(value);
-    saveDraft(window.localStorage, source, value);
+    saveDraft(safeStorage(), source, value);
   }
 
   async function recoverMentor(turnId, action) {
@@ -1039,7 +1034,7 @@ function App() {
     const source = document.body.dataset.rescue === "1"
       ? "chat"
       : (focus === "work" || document.body.dataset.returnWork === "1") ? "work" : "chat";
-    updateComposerDraft(source, `Explain "${selectionMenu.text}"`);
+    updateComposerDraft(source, t("explainSelection", { text: selectionMenu.text }));
     if (source === "work") setWorkContext(null);
     setSelectionMenu(null);
     requestAnimationFrame(() => (source === "work" ? workComposerRef.current : composerRef.current)?.focus());
@@ -1086,7 +1081,7 @@ function App() {
           context: source === "work" ? workContext : null,
         }),
       });
-      clearDraft(window.localStorage, source, currentDraft);
+      clearDraft(safeStorage(), source, currentDraft);
       if (source === "work") {
         setWorkDraft("");
         setWorkContext(null);
@@ -1100,7 +1095,7 @@ function App() {
       setMentorState("waiting");
     } catch (error) {
       const issue = connectionIssueFor(error);
-      setSendError(issue.title === "Workspace stopped" ? "" : error.message);
+      setSendError(issue.titleKey === "connection.stopped.title" ? "" : error.message);
       setConnected(false);
       setMentorAttached(false);
       setMentorState("idle");
@@ -1125,7 +1120,7 @@ function App() {
       api("/api/action", {
         method: "POST",
         body: JSON.stringify({ action: "parameter_change", componentId, controlId, value }),
-      }).catch((error) => setSendError(`Could not save this control: ${error.message}`));
+      }).catch((error) => setSendError(t("saveControlError", { message: error.message })));
     }
   }
 
@@ -1134,15 +1129,16 @@ function App() {
   return (
     <main className="workspace" data-focus={focus} onMouseUp={captureSelection} onKeyUp={captureSelection}>
       <ConnectionIssue issue={connectionIssue} />
-      {selectionMenu && <div className="selection-actions" role="toolbar" aria-label="Actions for selected text" data-below={selectionMenu.below ? "1" : "0"} style={{ left: selectionMenu.left, top: selectionMenu.top }} onPointerDown={(event) => event.preventDefault()}>
-        <button type="button" onClick={copySelection}>Copy</button>
-        <button type="button" onClick={explainSelection}>Explain</button>
+      {selectionMenu && <div className="selection-actions" role="toolbar" aria-label={t("Actions for selected text")} data-below={selectionMenu.below ? "1" : "0"} style={{ left: selectionMenu.left, top: selectionMenu.top }} onPointerDown={(event) => event.preventDefault()}>
+        <button type="button" onClick={copySelection}>{t("Copy")}</button>
+        <button type="button" onClick={explainSelection}>{t("Explain")}</button>
       </div>}
       <section className={`mentor-pane ${emptyConversation ? "is-empty" : "has-conversation"}`}>
         <header className="app-header">
-          <div className="brand-lockup"><span className="brand-mark">L</span><span>Learn anything</span></div>
-          {!emptyConversation && <h1>{topic}</h1>}
+          <div className="brand-lockup"><span className="brand-mark">L</span><span>{t("Learn anything")}</span></div>
+          {!emptyConversation && <h1>{t(topic)}</h1>}
           <div className="header-actions">
+            <ThemePicker />
             <ModelPicker id="chat" catalog={modelCatalog} selectedModel={mentorModel} changing={modelChanging} error={modelError} onChange={changeMentorModel} />
             <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
           </div>
@@ -1151,9 +1147,9 @@ function App() {
         {emptyConversation ? (
           <div className="welcome-shell">
             <div className="welcome-copy">
-              <span className="welcome-kicker">Your private learning space</span>
-              <h1>{topic}</h1>
-              <p>Start anywhere. Ask a basic question, name something confusing, or describe what you want to make. The lesson will adapt as you go.</p>
+              <span className="welcome-kicker">{t("Your private learning space")}</span>
+              <h1>{t(topic)}</h1>
+              <p>{t("Start anywhere. Ask a basic question, name something confusing, or describe what you want to make. The lesson will adapt as you go.")}</p>
             </div>
             <ChatComposer draft={chatDraft} setDraft={(value) => updateComposerDraft("chat", value)} sending={sending} sendError={sendError} mentorState={mentorState} onSend={() => sendMessage("chat")} onInterrupt={interruptMentor} inputRef={composerRef} centered />
           </div>
@@ -1169,10 +1165,11 @@ function App() {
         )}
       </section>
 
-      <section className="stage-pane" dir={canvasDirection} aria-label="Agent-generated learning canvas">
+      <section className="stage-pane" dir={canvasDirection} aria-label={t("Agent-generated learning canvas")}>
         <header className="stage-header">
-          <div><span className="stage-topic">{topic}</span><h2 id="stage-title">{canvasTitle}</h2></div>
+          <div><span className="stage-topic">{t(topic)}</span><h2 id="stage-title">{canvasTitle}</h2></div>
           <div className="header-actions">
+            <ThemePicker />
             <ModelPicker id="work" catalog={modelCatalog} selectedModel={mentorModel} changing={modelChanging} error={modelError} onChange={changeMentorModel} />
             <WorkspaceStatus connected={connected} mentorAttached={mentorAttached} degraded={degraded} hasRunnableCode={hasRunnableCode} />
           </div>
@@ -1182,35 +1179,35 @@ function App() {
           <div className="stage-column">
             {continuation?.kind === "action" && !currentTargetId && <ContinuationBanner continuation={continuation} active />}
             {surface?.components?.root
-              ? <A2uiNode componentId="root" surface={surface} onContext={setWorkContext} onParameterChange={updateParameter} onSubmitToMentor={submitCode} replyFor={replyFor} currentTargetId={currentTargetId} activeContinuation={continuation?.kind === "action" ? continuation : null} />
-              : <section className="activity-error" role="status">Lesson content is unavailable. Use Ask mentor to restore this activity.</section>}
+              ? <A2uiNode componentId="root" surface={surface} runResults={runResults} onContext={setWorkContext} onParameterChange={updateParameter} onSubmitToMentor={submitCode} replyFor={replyFor} currentTargetId={currentTargetId} activeContinuation={continuation?.kind === "action" ? continuation : null} />
+              : <section className="activity-error" role="status">{t("Lesson content is unavailable. Use Ask mentor to restore this activity.")}</section>}
             {workMentorLead && <details className="work-history-note">
-              <summary>{usesCyrillic(workMentorLead.content) ? "Контекст ментора" : "Mentor context"}</summary>
+              <summary>{t("Mentor context")}</summary>
               <Markdown content={workMentorLead.content} />
             </details>}
             {workExchange && !workExchange.answer?.context?.componentId && <section className="work-mentor-reply">
-              <div className="anchored-note-label">{usesCyrillic(workExchange.question.content) ? "Ваш вопрос" : "Your question"}</div>
+              <div className="anchored-note-label">{t("Your question")}</div>
               <Markdown content={workExchange.question.content} />
-              <div className="anchored-note-label">{usesCyrillic(workExchange.question.content) ? "Ментор" : "Mentor"}</div>
-              {workExchange.answer ? <Markdown content={workExchange.answer.content} /> : <p>{mentorState === "responding" ? "Responding…" : mentorState === "waiting" ? "Waiting…" : "No response yet."}</p>}
+              <div className="anchored-note-label">{t("Mentor")}</div>
+              {workExchange.answer ? <Markdown content={workExchange.answer.content} /> : <p>{mentorState === "responding" ? t("Responding…") : mentorState === "waiting" ? t("Waiting…") : t("No response yet.")}</p>}
             </section>}
           </div>
         </div>
-        <form aria-label="Ask mentor from work" onSubmit={(event) => { event.preventDefault(); void sendMessage("work"); }} className="work-question-bar">
+        <form aria-label={t("Ask mentor from work")} onSubmit={(event) => { event.preventDefault(); void sendMessage("work"); }} className="work-question-bar">
           <div className="work-question-inner">
             <div className="mentor-presence" aria-live="polite">
-              {mentorState === "waiting" && <><span className="thinking-dot" />Thinking about this… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}
-              {mentorState === "responding" && <><span className="thinking-dot" />Adding guidance… <button type="button" className="mentor-stop" onClick={interruptMentor}>Stop</button></>}
+              {mentorState === "waiting" && <><span className="thinking-dot" />{t("Thinking about this…")} <button type="button" className="mentor-stop" onClick={interruptMentor}>{t("Stop")}</button></>}
+              {mentorState === "responding" && <><span className="thinking-dot" />{t("Adding guidance…")} <button type="button" className="mentor-stop" onClick={interruptMentor}>{t("Stop")}</button></>}
             </div>
             <div className="work-question-control">
-              <textarea ref={workComposerRef} name="work-question" value={workDraft} onChange={(event) => updateComposerDraft("work", event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage("work"); } }} rows="1" aria-label="Question about this activity" placeholder="Ask about this activity…" className="work-question-input" />
-              <button type="submit" disabled={!workDraft.trim() || sending}>Ask</button>
+              <textarea ref={workComposerRef} name="work-question" value={workDraft} onChange={(event) => updateComposerDraft("work", event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage("work"); } }} rows="1" aria-label={t("Question about this activity")} placeholder={t("Ask about this activity…")} className="work-question-input" />
+              <button type="submit" disabled={!workDraft.trim() || sending}>{t("Ask")}</button>
             </div>
             {workContext && <div className="context-chip">
-              <span>About {workContext.label}{workContext.quote ? `: “${workContext.quote.slice(0, 80)}${workContext.quote.length > 80 ? "…" : ""}”` : ""}</span>
-              <button type="button" onClick={() => setWorkContext(null)}>Clear</button>
+              <span>{t("About")} {workContext.label}{workContext.quote ? `: “${workContext.quote.slice(0, 80)}${workContext.quote.length > 80 ? "…" : ""}”` : ""}</span>
+              <button type="button" onClick={() => setWorkContext(null)}>{t("Clear")}</button>
             </div>}
-            {sendError && <p className="send-error">Could not send: {sendError}</p>}
+            {sendError && <p className="send-error">{t("Could not send:")} {t(sendError)}</p>}
           </div>
         </form>
       </section>
